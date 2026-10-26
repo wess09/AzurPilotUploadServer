@@ -45,4 +45,6 @@ go vet ./...
 
 资源测试同时流入 30 × 10 MiB、检查两路上传及堆增量；另覆盖配额、断流、重启、确认丢失、重复组和 29/30 边界。
 
+可选真实 A→B 契约测试：设置 `WORKER_TEST_WS_URL` 与 `WORKER_TEST_TOKEN`，运行 `go test -run TestRealWorkerWebSocketContract -v .`。目标必须是使用 `create_app(config, start_engine=False)` 启动的专用 B 测试实例；该测试发送 30 份模拟云盘记录，确认真实 WebSocket 与 B 的持久化回执，不用于生产。
+
 123 盘使用官方 [上传域名接口](https://123yunpan.yuque.com/org-wiki-123yunpan-muaork/cr6ced/agn8lolktbqie7p9) 与 [单步上传接口](https://123yunpan.yuque.com/org-wiki-123yunpan-muaork/cr6ced/xhiht1uh3yp92pzc)。长期原图留在 123 盘，A 不主动删除云盘原图。

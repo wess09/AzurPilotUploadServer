@@ -166,8 +166,10 @@ func TestLimitsAndInterruptedReceive(t *testing.T) {
 }
 func TestCompleteFileDrainsBeforeGroupSeal(t *testing.T) {
 	c := testConfig(t)
-	s := newServer(c, opened(t, c), &testPan{})
 	data := pngData("first")
+	c.SpoolBytes, c.FileBytes = int64(len(data)), int64(len(data))
+	c.GroupBytes = c.FileBytes * 2
+	s := newServer(c, opened(t, c), &testPan{})
 	m := metadata(4, data, data)
 	if e := s.S.claimGroup(m); e != nil {
 		t.Fatal(e)
@@ -239,6 +241,9 @@ func TestBatchBoundaryDedupAndDurableOutbox(t *testing.T) {
 	b = pngData("sample 29")
 	if r = receive(t, s, metadata(29, b), b); r.Code != 202 {
 		t.Fatal(r.Body.String())
+	}
+	if premature, e := st.makeBatch(30); e != nil || premature != nil {
+		t.Fatal("30th group was dispatched before cloud upload completed", e)
 	}
 	_, _ = st.DB.Exec(`UPDATE files SET state='uploaded',remote_id=1`)
 	batch, e := st.makeBatch(30)

@@ -1,0 +1,48 @@
+# AzurPilot Upload Server — A 节点
+
+Go 1.26 + SQLite 上传入口。独立于统计服务器 C 和 Python 识别节点 B，无需 Redis。
+
+## 启动
+
+复制 `.env.example` 为 `.env`，填写 123 盘开放平台凭据、目录 ID、B 的 WSS 地址与 `WORKER_TOKEN`，运行：
+
+```sh
+docker compose up -d --build
+curl http://localhost:8090/healthz
+```
+
+原生运行：先将配置导入进程环境，再执行 `go run .`；程序不自动读取 `.env`。同一 `DATA_DIR` 只运行一个进程。Compose 端口仅绑定本机，通过自己的 HTTPS 反向代理公开上传入口，并将请求体上限设为至少 502 MiB、关闭代理请求体缓存。经过 CDN 时必须核实其请求大小限制；500 MiB 整组请求可以直接走 A 的 HTTPS 域名。
+
+## 资源与存储
+
+默认 30 路接收、2 路向云盘上传、1 GiB 图片暂存配额、每文件 10 MiB、每组 500 MiB，64 KiB 拷贝缓冲。`.env.example` 可调这些限制；B/C 的协议校验上限需同步调整。`BATCH_SIZE` 应为 1–30，生产保持 30。
+
+接收前逐文件预留空间；已写入部分也被该预留覆盖。空间不足返回 `503`，并发耗尽返回 `429`，均带 `Retry-After`。上传读取空闲超过 30 秒会中断。客户端保持原 `upload_id`、元数据及文件顺序重传整组，已收到文件会验证哈希后复用。完整文件立即进入上传处理，不等整组完成。
+
+123 盘明确返回 `completed=true` 与文件 ID 后才删除本地原图。上传失败保留磁盘文件并重试。SQLite WAL 和少量元数据不计入 1 GiB **图片配额**，须额外预留磁盘；默认还保留 256 MiB 磁盘余量。重启清理无登记的临时图片，恢复上传和未确认通知。
+
+## 上传协议
+
+`POST /api/v1/uploads`，`multipart/form-data`，第一项必须叫 `metadata`，内容为以下 JSON；后续每项为 PNG 文件，顺序与 `file_sizes` 一致：
+
+```json
+{"upload_id":"303d1f40-3280-4053-84dd-574a83f59d20","device_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","instance_id":"bbbbbbbbbbbbbbbb","project":"research","scene":"research_complete","server":"cn","collected_at":"2026-10-26T12:00:00+08:00","file_sizes":[12345]}
+```
+
+`project` 为 `research` 或 `drop`；科研刷新用 `research_refresh`。成功返回 `202` 和 `sha256`、`duplicate`。大小超限 `413`，无效或中断请求 `400`，同一上传 ID 内容冲突 `409`。
+
+图片组 SHA-256 = 按上传顺序连接各文件 SHA-256 的 **32 字节二进制摘要**后再计算 SHA-256。相同组哈希只统计第一次登记的提交信息。重复组不增加可派发计数；部分重复文件可能已传到云盘，但不会重复统计。
+
+恰好 30 份唯一组全部上传完成后，A 持久化 `batch_ready` 并通过 WebSocket 推送 B。B 落库后回 `batch_accepted`；丢失确认时沿用同一批次 ID 补发。不满 30 份继续等待，没有定时强制派发。
+
+## 验证与参考
+
+```sh
+go test -count=1 ./...
+go test -race -count=1 ./... # Windows 需要 C 编译器，或在 Linux Go 容器中运行
+go vet ./...
+```
+
+资源测试同时流入 30 × 10 MiB、检查两路上传及堆增量；另覆盖配额、断流、重启、确认丢失、重复组和 29/30 边界。
+
+123 盘使用官方 [上传域名接口](https://123yunpan.yuque.com/org-wiki-123yunpan-muaork/cr6ced/agn8lolktbqie7p9) 与 [单步上传接口](https://123yunpan.yuque.com/org-wiki-123yunpan-muaork/cr6ced/xhiht1uh3yp92pzc)。长期原图留在 123 盘，A 不主动删除云盘原图。

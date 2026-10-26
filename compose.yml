@@ -1,0 +1,15 @@
+services:
+  uploader:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    ports: ["127.0.0.1:8090:8090"]
+    volumes: ["upload-state:/data"]
+    cpus: 2
+    mem_limit: 768m
+    stop_grace_period: 40s
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+volumes:
+  upload-state:

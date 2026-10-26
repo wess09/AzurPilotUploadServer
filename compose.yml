@@ -1,5 +1,6 @@
 services:
   uploader:
+    image: ${UPLOAD_IMAGE:-ghcr.io/wess09/azurpilotuploadserver:latest}
     build: .
     restart: unless-stopped
     env_file: .env

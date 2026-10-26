@@ -7,11 +7,14 @@ Go 1.26 + SQLite 上传入口。独立于统计服务器 C 和 Python 识别节�
 复制 `.env.example` 为 `.env`，填写 123 盘开放平台凭据、目录 ID、B 的 WSS 地址与 `WORKER_TOKEN`，运行：
 
 ```sh
-docker compose up -d --build
+docker compose pull
+docker compose up -d
 curl http://localhost:8090/healthz
 ```
 
 原生运行：先将配置导入进程环境，再执行 `go run .`；程序不自动读取 `.env`。同一 `DATA_DIR` 只运行一个进程。Compose 端口仅绑定本机，通过自己的 HTTPS 反向代理公开上传入口，并将请求体上限设为至少 502 MiB、关闭代理请求体缓存。经过 CDN 时必须核实其请求大小限制；500 MiB 整组请求可以直接走 A 的 HTTPS 域名。
+
+镜像地址为 `ghcr.io/wess09/azurpilotuploadserver:latest`，提供 Linux amd64/arm64。`main` 是主分支标签，`sha-<完整提交号>` 可用于固定版本；推送 `v*` 标签发布版本镜像。主分支和版本标签经测试后自动推送 GHCR，PR 只构建。需要本地构建时使用 `docker compose up -d --build`，可通过 `UPLOAD_IMAGE` 指定镜像版本。
 
 ## 资源与存储
 

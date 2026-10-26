@@ -6,6 +6,7 @@ import (
 	"os"
 	"sync"
 	"testing"
+	"time"
 )
 
 // Opt-in contract check against a disposable B service with recognition stopped.
@@ -17,6 +18,7 @@ func TestRealWorkerWebSocketContract(t *testing.T) {
 		t.Skip("WORKER_TEST_WS_URL is not configured")
 	}
 	c := testConfig(t)
+	c.BatchInterval = time.Second
 	c.WorkerURL, c.WorkerToken = url, os.Getenv("WORKER_TEST_TOKEN")
 	s := newServer(c, opened(t, c), &testPan{})
 	ctx, cancel := context.WithCancel(context.Background())

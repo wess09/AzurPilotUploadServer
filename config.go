@@ -12,10 +12,21 @@ type Config struct {
 	ReceiveConcurrency, UploadConcurrency, BatchSize                                         int
 	SpoolBytes, FileBytes, GroupBytes, MinFreeBytes                                          int64
 	Poll                                                                                     time.Duration
+	BatchInterval                                                                            time.Duration
+	WorkerMode                                                                               string
 }
 
 func loadConfig() (Config, error) {
 	c := Config{Addr: env("LISTEN_ADDR", ":8090"), DataDir: env("DATA_DIR", "data"), WorkerURL: os.Getenv("WORKER_WS_URL"), WorkerToken: os.Getenv("WORKER_TOKEN"), PanID: os.Getenv("PAN_CLIENT_ID"), PanSecret: os.Getenv("PAN_CLIENT_SECRET"), PanBase: env("PAN_API_BASE", "https://open-api.123pan.com"), AccessID: os.Getenv("CF_ACCESS_CLIENT_ID"), AccessSecret: os.Getenv("CF_ACCESS_CLIENT_SECRET"), Poll: time.Second}
+	c.WorkerMode = env("WORKER_MODE", "reverse")
+	var err error
+	c.BatchInterval, err = time.ParseDuration(env("BATCH_INTERVAL", "30m"))
+	if err != nil || c.BatchInterval < time.Second || c.BatchInterval > 24*time.Hour || c.BatchInterval%time.Second != 0 {
+		return c, fmt.Errorf("BATCH_INTERVAL must be whole seconds between 1s and 24h")
+	}
+	if c.WorkerMode != "reverse" && c.WorkerMode != "forward" {
+		return c, fmt.Errorf("WORKER_MODE must be reverse or forward")
+	}
 	for _, v := range []struct {
 		name     string
 		dst      *int
@@ -44,8 +55,11 @@ func loadConfig() (Config, error) {
 	if c.BatchSize > 30 {
 		return c, fmt.Errorf("BATCH_SIZE must be 1..30")
 	}
-	if c.PanID == "" || c.PanSecret == "" || c.WorkerToken == "" || c.WorkerURL == "" {
-		return c, fmt.Errorf("PAN_CLIENT_ID, PAN_CLIENT_SECRET, WORKER_TOKEN and WORKER_WS_URL are required")
+	if c.PanID == "" || c.PanSecret == "" || c.WorkerToken == "" {
+		return c, fmt.Errorf("PAN_CLIENT_ID, PAN_CLIENT_SECRET and WORKER_TOKEN are required")
+	}
+	if c.WorkerMode == "forward" && c.WorkerURL == "" {
+		return c, fmt.Errorf("WORKER_WS_URL is required in forward mode")
 	}
 	return c, nil
 }

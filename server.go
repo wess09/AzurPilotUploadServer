@@ -38,14 +38,16 @@ type Uploader interface {
 	Upload(context.Context, File) (int64, error)
 }
 type Server struct {
-	C         Config
-	S         *Store
-	Pan       Uploader
-	receivers chan struct{}
+	C             Config
+	S             *Store
+	Pan           Uploader
+	receivers     chan struct{}
+	workerSlot    chan struct{}
+	workerContext context.Context
 }
 
 func newServer(c Config, s *Store, pan Uploader) *Server {
-	return &Server{c, s, pan, make(chan struct{}, c.ReceiveConcurrency)}
+	return &Server{C: c, S: s, Pan: pan, receivers: make(chan struct{}, c.ReceiveConcurrency), workerSlot: make(chan struct{}, 1), workerContext: context.Background()}
 }
 func respond(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
@@ -64,9 +66,10 @@ func (s *Server) Handler() http.Handler {
 	m.HandleFunc("POST /api/v1/uploads/init", s.initialize)
 	m.HandleFunc("PUT /api/v1/uploads/{id}/files/{index}", s.receiveFile)
 	m.HandleFunc("POST /api/v1/uploads/{id}/complete", s.complete)
+	m.HandleFunc("GET /internal/v1/worker/connect", s.acceptWorker)
 	m.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		u, v := s.S.Quota.snapshot()
-		respond(w, 200, map[string]any{"status": "ok", "spool_used": u, "spool_reserved": v, "spool_limit": s.C.SpoolBytes})
+		respond(w, 200, map[string]any{"status": "ok", "spool_used": u, "spool_reserved": v, "spool_limit": s.C.SpoolBytes, "worker_connected": len(s.workerSlot) > 0, "worker_mode": s.C.WorkerMode, "batch_interval_seconds": int64(s.S.Interval / time.Second)})
 	})
 	return m
 }

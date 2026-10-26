@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/subtle"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -16,6 +17,12 @@ import (
 )
 
 func (s *Server) notify(ctx context.Context) error {
+	select {
+	case s.workerSlot <- struct{}{}:
+		defer func() { <-s.workerSlot }()
+	default:
+		return errors.New("worker already connected")
+	}
 	header := http.Header{"Authorization": []string{"Bearer " + s.C.WorkerToken}}
 	if s.C.AccessID != "" {
 		header.Set("CF-Access-Client-Id", s.C.AccessID)
@@ -26,6 +33,42 @@ func (s *Server) notify(ctx context.Context) error {
 		return err
 	}
 	defer c.CloseNow()
+	return s.sendBatches(ctx, c)
+}
+
+func (s *Server) acceptWorker(w http.ResponseWriter, r *http.Request) {
+	if s.C.WorkerMode != "reverse" {
+		http.NotFound(w, r)
+		return
+	}
+	if s.C.WorkerToken == "" || subtle.ConstantTimeCompare([]byte(r.Header.Get("Authorization")), []byte("Bearer "+s.C.WorkerToken)) != 1 {
+		reject(w, 401, errors.New("invalid worker credential"))
+		return
+	}
+	select {
+	case s.workerSlot <- struct{}{}:
+		defer func() { <-s.workerSlot }()
+	default:
+		reject(w, 409, errors.New("worker already connected"))
+		return
+	}
+	c, err := websocket.Accept(w, r, nil)
+	if err != nil {
+		return
+	}
+	defer c.CloseNow()
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+	stop := context.AfterFunc(s.workerContext, cancel)
+	defer stop()
+	slog.Info("worker connected", "mode", "reverse")
+	err = s.sendBatches(ctx, c)
+	if err != nil && ctx.Err() == nil {
+		slog.Warn("worker disconnected", "error", err)
+	}
+}
+
+func (s *Server) sendBatches(ctx context.Context, c *websocket.Conn) error {
 	c.SetReadLimit(4096)
 	connectionCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -125,23 +168,26 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	s := newServer(c, st, &PanClient{Client: &http.Client{Timeout: 5 * time.Minute}, Base: c.PanBase, ClientID: c.PanID, Secret: c.PanSecret})
+	s.workerContext = ctx
 	var wg sync.WaitGroup
 	for range c.UploadConcurrency {
 		wg.Go(func() { s.uploadLoop(ctx) })
 	}
 	wg.Go(func() { s.cleanupLoop(ctx) })
-	wg.Go(func() {
-		for ctx.Err() == nil {
-			if e := s.notify(ctx); e != nil && ctx.Err() == nil {
-				slog.Warn("worker reconnect", "error", e)
+	if c.WorkerMode == "forward" {
+		wg.Go(func() {
+			for ctx.Err() == nil {
+				if e := s.notify(ctx); e != nil && ctx.Err() == nil {
+					slog.Warn("worker reconnect", "error", e)
+				}
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(5 * time.Second):
+				}
 			}
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(5 * time.Second):
-			}
-		}
-	})
+		})
+	}
 	server := &http.Server{Addr: c.Addr, Handler: s.Handler(), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: time.Minute, MaxHeaderBytes: 16 << 10}
 	done := make(chan error, 1)
 	go func() { done <- server.ListenAndServe() }()

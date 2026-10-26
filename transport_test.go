@@ -103,6 +103,7 @@ func TestNotifierReplaysUnacknowledgedBatch(t *testing.T) {
 		t.Fatal(r.Body.String())
 	}
 	_, _ = s.S.DB.Exec(`UPDATE files SET state='uploaded',remote_id=1`)
+	atNextBoundary(t, s.S)
 	var attempts atomic.Int32
 	var first atomic.Value
 	ctx, cancel := context.WithCancel(context.Background())

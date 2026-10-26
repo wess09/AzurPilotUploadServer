@@ -12,7 +12,9 @@ config = subprocess.run(["docker", "compose", "config", "--format", "json"], cap
 if config.returncode:
     sys.exit("Compose configuration is invalid; inspect it locally before starting.")
 environment = json.loads(config.stdout)["services"]["uploader"]["environment"]
-required = ("PAN_CLIENT_ID", "PAN_CLIENT_SECRET", "WORKER_WS_URL", "WORKER_TOKEN")
+required = ("PAN_CLIENT_ID", "PAN_CLIENT_SECRET", "WORKER_TOKEN")
+if environment.get("WORKER_MODE", "reverse") == "forward":
+    required += ("WORKER_WS_URL",)
 missing = [name for name in required if not environment.get(name)]
 if missing:
     sys.exit("Configure these fields in .env before accepting uploads: " + ", ".join(missing))

@@ -243,11 +243,21 @@ func TestBatchBoundaryDedupAndDurableOutbox(t *testing.T) {
 		t.Fatal(r.Body.String())
 	}
 	if premature, e := st.makeBatch(30); e != nil || premature != nil {
-		t.Fatal("30th group was dispatched before cloud upload completed", e)
+		t.Fatal("group dispatched before time boundary", e)
 	}
+	clock := atNextBoundary(t, st)
+	partial, e := st.makeBatch(30)
+	if e != nil || partial == nil || len(partial.Items) != 29 {
+		t.Fatal("ready groups must dispatch without reaching 30", partial, e)
+	}
+	_, _ = st.DB.Exec(`UPDATE batches SET acked=1 WHERE id=?`, partial.ID)
 	_, _ = st.DB.Exec(`UPDATE files SET state='uploaded',remote_id=1`)
+	if premature, e := st.makeBatch(30); e != nil || premature != nil {
+		t.Fatal("late cloud completion escaped its next window", premature, e)
+	}
+	clock.Add(int64(st.Interval / time.Second))
 	batch, e := st.makeBatch(30)
-	if e != nil || batch == nil || len(batch.Items) != 30 {
+	if e != nil || batch == nil || len(batch.Items) != 1 {
 		t.Fatalf("batch: %+v %v", batch, e)
 	}
 	again, e := st.makeBatch(30)

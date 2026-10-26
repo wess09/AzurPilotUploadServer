@@ -43,16 +43,20 @@ type Sample struct {
 	Files    []File   `json:"files"`
 }
 type Batch struct {
-	Type    string   `json:"type"`
-	Version int      `json:"protocol_version"`
-	ID      string   `json:"batch_id"`
-	Items   []Sample `json:"items"`
+	Type        string   `json:"type"`
+	Version     int      `json:"protocol_version"`
+	ID          string   `json:"batch_id"`
+	Items       []Sample `json:"items"`
+	WindowStart string   `json:"window_start,omitempty"`
+	WindowEnd   string   `json:"window_end,omitempty"`
 }
 type Store struct {
-	cleanup sync.Mutex
-	DB      *sql.DB
-	Dir     string
-	Quota   *Quota
+	cleanup  sync.Mutex
+	DB       *sql.DB
+	Dir      string
+	Quota    *Quota
+	Interval time.Duration
+	Now      func() time.Time
 }
 
 func newID() string {
@@ -73,13 +77,23 @@ func openStore(c Config) (*Store, error) {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
-	s := &Store{DB: db, Dir: dir, Quota: &Quota{Limit: c.SpoolBytes, MinFree: c.MinFreeBytes, Free: func() (int64, error) { return diskFree(dir) }}}
+	interval := c.BatchInterval
+	if interval == 0 {
+		interval = 30 * time.Minute
+	}
+	s := &Store{DB: db, Dir: dir, Interval: interval, Now: time.Now, Quota: &Quota{Limit: c.SpoolBytes, MinFree: c.MinFreeBytes, Free: func() (int64, error) { return diskFree(dir) }}}
 	if _, err = db.Exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=5000;
 CREATE TABLE IF NOT EXISTS uploads(id TEXT PRIMARY KEY, metadata TEXT NOT NULL, hash TEXT UNIQUE, state TEXT NOT NULL DEFAULT 'receiving', busy INTEGER NOT NULL DEFAULT 0, batch_id TEXT, canonical TEXT, created_at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS files(id TEXT PRIMARY KEY, group_id TEXT NOT NULL REFERENCES uploads(id), idx INTEGER NOT NULL, path TEXT NOT NULL, size INTEGER NOT NULL, md5 TEXT NOT NULL, sha TEXT NOT NULL, remote_id INTEGER NOT NULL DEFAULT 0, state TEXT NOT NULL DEFAULT 'pending', retry_at INTEGER NOT NULL DEFAULT 0, error TEXT NOT NULL DEFAULT '', UNIQUE(group_id,idx));
 CREATE INDEX IF NOT EXISTS files_pending ON files(state,retry_at);
 CREATE TABLE IF NOT EXISTS batches(id TEXT PRIMARY KEY, payload TEXT NOT NULL, acked INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS dispatch_state(id INTEGER PRIMARY KEY CHECK(id=1),next_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS dispatch_queue(group_id TEXT PRIMARY KEY,window_end INTEGER NOT NULL);
 UPDATE uploads SET busy=0; UPDATE files SET state='pending' WHERE state='uploading';`); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if _, err = db.Exec(`INSERT OR IGNORE INTO dispatch_state VALUES(1,?)`, time.Now().Truncate(interval).Add(interval).Unix()); err != nil {
 		db.Close()
 		return nil, err
 	}
@@ -264,15 +278,30 @@ func (s *Store) makeBatch(size int) (*Batch, error) {
 		return nil, err
 	}
 	defer tx.Rollback()
-	rows, err := tx.Query(`SELECT id,metadata,hash FROM uploads u WHERE state='sealed' AND NOT EXISTS(SELECT 1 FROM files f WHERE f.group_id=u.id AND f.state<>'uploaded') ORDER BY created_at,id LIMIT ?`, size)
+	var next int64
+	if err = tx.QueryRow(`SELECT next_at FROM dispatch_state WHERE id=1`).Scan(&next); err != nil {
+		return nil, err
+	}
+	now := s.Now()
+	if now.Unix() >= next {
+		cutoff := now.Truncate(s.Interval).Unix()
+		if _, err = tx.Exec(`INSERT OR IGNORE INTO dispatch_queue SELECT id,? FROM uploads u WHERE state='sealed' AND NOT EXISTS(SELECT 1 FROM files f WHERE f.group_id=u.id AND f.state<>'uploaded')`, cutoff); err != nil {
+			return nil, err
+		}
+		if _, err = tx.Exec(`UPDATE dispatch_state SET next_at=? WHERE id=1`, now.Truncate(s.Interval).Add(s.Interval).Unix()); err != nil {
+			return nil, err
+		}
+	}
+	rows, err := tx.Query(`SELECT u.id,u.metadata,u.hash,d.window_end FROM uploads u JOIN dispatch_queue d ON d.group_id=u.id WHERE u.state='sealed' AND d.window_end=(SELECT min(window_end) FROM dispatch_queue) ORDER BY u.created_at,u.id LIMIT ?`, size)
 	if err != nil {
 		return nil, err
 	}
 	var ids []string
+	var windowEnd int64
 	b := &Batch{Type: "batch_ready", Version: 1, ID: newID(), Items: []Sample{}}
 	for rows.Next() {
 		var id, meta, hash string
-		if err = rows.Scan(&id, &meta, &hash); err != nil {
+		if err = rows.Scan(&id, &meta, &hash, &windowEnd); err != nil {
 			break
 		}
 		var sample Sample
@@ -290,9 +319,11 @@ func (s *Store) makeBatch(size int) (*Batch, error) {
 	if err != nil {
 		return nil, err
 	}
-	if len(ids) < size {
-		return nil, nil
+	if len(ids) == 0 {
+		return nil, tx.Commit()
 	}
+	b.WindowEnd = time.Unix(windowEnd, 0).UTC().Format(time.RFC3339)
+	b.WindowStart = time.Unix(windowEnd, 0).Add(-s.Interval).UTC().Format(time.RFC3339)
 	for i, id := range ids {
 		fr, e := tx.Query(`SELECT idx,size,sha,remote_id FROM files WHERE group_id=? ORDER BY idx`, id)
 		if e != nil {
@@ -313,6 +344,9 @@ func (s *Store) makeBatch(size int) (*Batch, error) {
 			return nil, e
 		}
 		if _, err = tx.Exec(`UPDATE uploads SET state='batched',batch_id=? WHERE id=?`, b.ID, id); err != nil {
+			return nil, err
+		}
+		if _, err = tx.Exec(`DELETE FROM dispatch_queue WHERE group_id=?`, id); err != nil {
 			return nil, err
 		}
 	}

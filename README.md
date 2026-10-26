@@ -12,7 +12,7 @@ docker compose up -d
 curl http://localhost:8090/healthz
 ```
 
-原生运行：先将配置导入进程环境，再执行 `go run .`；程序不自动读取 `.env`。同一 `DATA_DIR` 只运行一个进程。Compose 端口仅绑定本机，通过自己的 HTTPS 反向代理公开上传入口，并将请求体上限设为至少 502 MiB、关闭代理请求体缓存。经过 CDN 时必须核实其请求大小限制；500 MiB 整组请求可以直接走 A 的 HTTPS 域名。
+原生运行：先将配置导入进程环境，再执行 `go run .`；程序不自动读取 `.env`。同一 `DATA_DIR` 只运行一个进程。Compose 端口仅绑定本机，通过 HTTPS 反向代理或 Cloudflare Tunnel 公开上传入口。Cloudflare 免费套餐单次请求上限为 100 MB；走 Tunnel 时使用下述按文件上传协议，每个请求最多 10 MiB，整组仍支持 500 MiB。保留的整组 multipart 接口需要代理允许至少 502 MiB 请求体并关闭请求体缓存。
 
 镜像地址为 `ghcr.io/wess09/azurpilotuploadserver:latest`，提供 Linux amd64/arm64。`main` 是主分支标签，`sha-<完整提交号>` 可用于固定版本；推送 `v*` 标签发布版本镜像。主分支和版本标签经测试后自动推送 GHCR，PR 只构建。需要本地构建时使用 `docker compose up -d --build`，可通过 `UPLOAD_IMAGE` 指定镜像版本。
 
@@ -27,6 +27,22 @@ Linux 服务器也可在镜像已拉取或导入后执行 `sh deploy/start.sh`�
 123 盘明确返回 `completed=true` 与文件 ID 后才删除本地原图。上传失败保留磁盘文件并重试。SQLite WAL 和少量元数据不计入 1 GiB **图片配额**，须额外预留磁盘；默认还保留 256 MiB 磁盘余量。重启清理无登记的临时图片，恢复上传和未确认通知。
 
 ## 上传协议
+
+### 按文件上传（Cloudflare Tunnel 推荐）
+
+1. `POST /api/v1/uploads/init`：JSON 请求体为下方完整元数据，登记整组文件大小。返回 `202`；只登记，不预占整组磁盘。
+2. `PUT /api/v1/uploads/{upload_id}/files/{index}`：请求体为单张 PNG 原始字节，`index` 从 0 开始，大小须与 `file_sizes` 对应项相同。完整落盘立即进入云盘上传队列。
+3. `POST /api/v1/uploads/{upload_id}/complete`：所有文件接收完成后确认整组，返回 `202` 和组哈希。缺文件返回 `409`，不会提前加入 30 份批次。
+
+```sh
+curl --fail-with-body -H 'Content-Type: application/json' --data-binary @metadata.json https://upload.example.com/api/v1/uploads/init
+curl --fail-with-body -X PUT --data-binary @image.png https://upload.example.com/api/v1/uploads/303d1f40-3280-4053-84dd-574a83f59d20/files/0
+curl --fail-with-body -X POST https://upload.example.com/api/v1/uploads/303d1f40-3280-4053-84dd-574a83f59d20/complete
+```
+
+同组文件顺序发送；不同组可并发。断线或重启后保留原元数据、上传 ID 和索引重试，已接收文件即使已清理本地副本也会按哈希核验并复用。重复确认不会重复派发；相同 ID 的元数据或文件变化返回 `409`。与整组接口共用限流、配额、云盘任务和组哈希去重。
+
+### 整组上传（兼容接口）
 
 `POST /api/v1/uploads`，`multipart/form-data`，第一项必须叫 `metadata`，内容为以下 JSON；后续每项为 PNG 文件，顺序与 `file_sizes` 一致：
 

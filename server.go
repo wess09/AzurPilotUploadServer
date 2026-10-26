@@ -61,6 +61,9 @@ func reject(w http.ResponseWriter, status int, err error) {
 func (s *Server) Handler() http.Handler {
 	m := http.NewServeMux()
 	m.HandleFunc("POST /api/v1/uploads", s.receive)
+	m.HandleFunc("POST /api/v1/uploads/init", s.initialize)
+	m.HandleFunc("PUT /api/v1/uploads/{id}/files/{index}", s.receiveFile)
+	m.HandleFunc("POST /api/v1/uploads/{id}/complete", s.complete)
 	m.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		u, v := s.S.Quota.snapshot()
 		respond(w, 200, map[string]any{"status": "ok", "spool_used": u, "spool_reserved": v, "spool_limit": s.C.SpoolBytes})

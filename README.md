@@ -75,3 +75,8 @@ go vet ./...
 可选真实 A→B 契约测试：设置 `WORKER_TEST_WS_URL` 与 `WORKER_TEST_TOKEN`，运行 `go test -run TestRealWorkerWebSocketContract -v .`。目标必须是使用 `create_app(config, start_engine=False)` 启动的专用 B 测试实例；该测试发送 30 份模拟云盘记录，确认真实 WebSocket 与 B 的持久化回执，不用于生产。
 
 123 盘使用官方 [上传域名接口](https://123yunpan.yuque.com/org-wiki-123yunpan-muaork/cr6ced/agn8lolktbqie7p9) 与 [单步上传接口](https://123yunpan.yuque.com/org-wiki-123yunpan-muaork/cr6ced/xhiht1uh3yp92pzc)。长期原图留在 123 盘，A 不主动删除云盘原图。
+## 历史客户端接口
+
+`POST /api/upload` 和 `/api/upload/` 接收单个 multipart `file`，支持旧 AP 的 `device_id/genre/combat_count`，以及 `User-Agent: Alas (<id>)` 的单文件上传。成功 HTTP 200，兼容 Lsky/Imgurl 回执。原 PNG 文件名中的 13 位毫秒时间戳作为采集时间；显式 `collected_at` 优先。无场景信息的截图由 B 分类，不确定时进入复核。
+
+`STATISTICS_PUBLIC_URL` 设置 C 公网地址（例如 `https://stats.azurpilot.com`），历史 JSON 和查询接口以 307 转交 C。图片仍在 A 流式落盘，每请求只预留单文件上限，上传 123 盘完成后删除本地副本。调度仍按 :00/:30，`BATCH_SIZE` 不是触发份数。

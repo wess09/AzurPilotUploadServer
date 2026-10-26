@@ -63,6 +63,12 @@ func reject(w http.ResponseWriter, status int, err error) {
 func (s *Server) Handler() http.Handler {
 	m := http.NewServeMux()
 	m.HandleFunc("POST /api/v1/uploads", s.receive)
+	m.HandleFunc("/api/upload", legacyPublic(s.receiveLegacy))
+	m.HandleFunc("/api/upload/{$}", legacyPublic(s.receiveLegacy))
+	m.HandleFunc("/api/telemetry/stats/stream", s.redirectLegacyStatistics)
+	for _, path := range []string{"/api/data/opsi_items", "/api/azurstat", "/api/azurstat/stats", "/api/azurstat/items", "/api/azurstat/history", "/api/azurstat/filters", "/api/telemetry", "/api/telemetry/stats", "/api/telemetry/history", "/api/telemetry/global_history", "/api/get/announcement", "/api/force_update", "/api/maintenance"} {
+		m.HandleFunc(path, s.redirectLegacyStatistics)
+	}
 	m.HandleFunc("POST /api/v1/uploads/init", s.initialize)
 	m.HandleFunc("PUT /api/v1/uploads/{id}/files/{index}", s.receiveFile)
 	m.HandleFunc("POST /api/v1/uploads/{id}/complete", s.complete)
@@ -74,6 +80,9 @@ func (s *Server) Handler() http.Handler {
 	return m
 }
 func (s *Server) validate(m Metadata) error {
+	if m.CombatCount < 0 || m.CombatCount > 1e9 || len(m.LegacyFilename) > 256 || len(m.Submitter) > 128 || len(m.LegacyDeviceID) > 64 {
+		return fmt.Errorf("invalid legacy metadata")
+	}
 	if !uuidRE.MatchString(m.UploadID) || !deviceRE.MatchString(m.DeviceID) || !instanceRE.MatchString(m.InstanceID) {
 		return fmt.Errorf("invalid upload/device/instance ID")
 	}

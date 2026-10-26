@@ -18,14 +18,18 @@ import (
 )
 
 type Metadata struct {
-	UploadID    string  `json:"upload_id"`
-	DeviceID    string  `json:"device_id"`
-	InstanceID  string  `json:"instance_id"`
-	Project     string  `json:"project"`
-	Scene       string  `json:"scene"`
-	Server      string  `json:"server"`
-	CollectedAt string  `json:"collected_at"`
-	Sizes       []int64 `json:"file_sizes"`
+	UploadID       string  `json:"upload_id"`
+	DeviceID       string  `json:"device_id"`
+	InstanceID     string  `json:"instance_id"`
+	Project        string  `json:"project"`
+	Scene          string  `json:"scene"`
+	Server         string  `json:"server"`
+	CollectedAt    string  `json:"collected_at"`
+	Sizes          []int64 `json:"file_sizes"`
+	CombatCount    int64   `json:"combat_count,omitempty"`
+	LegacyFilename string  `json:"legacy_filename,omitempty"`
+	LegacyDeviceID string  `json:"legacy_device_id,omitempty"`
+	Submitter      string  `json:"submitter,omitempty"`
 }
 type File struct {
 	ID       string `json:"-"`

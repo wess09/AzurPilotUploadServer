@@ -14,11 +14,13 @@ type Config struct {
 	Poll                                                                                     time.Duration
 	BatchInterval                                                                            time.Duration
 	WorkerMode                                                                               string
+	StatisticsURL                                                                            string
 }
 
 func loadConfig() (Config, error) {
 	c := Config{Addr: env("LISTEN_ADDR", ":8090"), DataDir: env("DATA_DIR", "data"), WorkerURL: os.Getenv("WORKER_WS_URL"), WorkerToken: os.Getenv("WORKER_TOKEN"), PanID: os.Getenv("PAN_CLIENT_ID"), PanSecret: os.Getenv("PAN_CLIENT_SECRET"), PanBase: env("PAN_API_BASE", "https://open-api.123pan.com"), AccessID: os.Getenv("CF_ACCESS_CLIENT_ID"), AccessSecret: os.Getenv("CF_ACCESS_CLIENT_SECRET"), Poll: time.Second}
 	c.WorkerMode = env("WORKER_MODE", "reverse")
+	c.StatisticsURL = os.Getenv("STATISTICS_PUBLIC_URL")
 	var err error
 	c.BatchInterval, err = time.ParseDuration(env("BATCH_INTERVAL", "30m"))
 	if err != nil || c.BatchInterval < time.Second || c.BatchInterval > 24*time.Hour || c.BatchInterval%time.Second != 0 {

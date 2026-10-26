@@ -16,6 +16,8 @@ curl http://localhost:8090/healthz
 
 镜像地址为 `ghcr.io/wess09/azurpilotuploadserver:latest`，提供 Linux amd64/arm64。`main` 是主分支标签，`sha-<完整提交号>` 可用于固定版本；推送 `v*` 标签发布版本镜像。主分支和版本标签经测试后自动推送 GHCR，PR 只构建。需要本地构建时使用 `docker compose up -d --build`，可通过 `UPLOAD_IMAGE` 指定镜像版本。
 
+Linux 服务器也可在镜像已拉取或导入后执行 `sh deploy/start.sh`；脚本会先检查必需配置，并避免在服务器上编译或再次访问镜像仓库。`.env` 建议设为仅管理员可读（`chmod 600 .env`），未填 123 盘和 B 的连接配置时不会启动接收。
+
 ## 资源与存储
 
 默认 30 路接收、2 路向云盘上传、1 GiB 图片暂存配额、每文件 10 MiB、每组 500 MiB，64 KiB 拷贝缓冲。`.env.example` 可调这些限制；B/C 的协议校验上限需同步调整。`BATCH_SIZE` 应为 1–30，生产保持 30。

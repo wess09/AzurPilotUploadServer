@@ -33,6 +33,7 @@ func (s *Server) notify(ctx context.Context) error {
 		return err
 	}
 	defer c.CloseNow()
+	slog.Info("worker connected", "mode", "forward")
 	return s.sendBatches(ctx, c)
 }
 
@@ -108,12 +109,14 @@ func (s *Server) sendBatches(ctx context.Context, c *websocket.Conn) error {
 			return e
 		}
 		if b != nil {
+			started := time.Now()
 			writeCtx, stop := context.WithTimeout(connectionCtx, 30*time.Second)
 			e = wsjson.Write(writeCtx, c, b)
 			stop()
 			if e != nil {
 				return e
 			}
+			slog.Info("batch sent", "batch_id", b.ID, "groups", len(b.Items), "window_end", b.WindowEnd)
 			ackTimer := time.NewTimer(30 * time.Second)
 			select {
 			case id := <-acks:
@@ -124,6 +127,8 @@ func (s *Server) sendBatches(ctx context.Context, c *websocket.Conn) error {
 				if _, e = s.S.DB.Exec(`UPDATE batches SET acked=1 WHERE id=?`, id); e != nil {
 					return e
 				}
+				slog.Info("batch accepted", "batch_id", id, "groups", len(b.Items),
+					"duration_ms", time.Since(started).Milliseconds())
 			case e := <-readErr:
 				ackTimer.Stop()
 				return e
@@ -169,11 +174,16 @@ func run() error {
 	defer stop()
 	s := newServer(c, st, &PanClient{Client: &http.Client{Timeout: 5 * time.Minute}, Base: c.PanBase, ClientID: c.PanID, Secret: c.PanSecret})
 	s.workerContext = ctx
+	slog.Info("uploader starting", "listen", c.Addr, "receive_concurrency", c.ReceiveConcurrency,
+		"upload_concurrency", c.UploadConcurrency, "file_limit", c.FileBytes, "group_limit", c.GroupBytes,
+		"spool_limit", c.SpoolBytes, "batch_interval", st.Interval.String(), "worker_mode", c.WorkerMode)
+	s.logStatus(ctx)
 	var wg sync.WaitGroup
 	for range c.UploadConcurrency {
 		wg.Go(func() { s.uploadLoop(ctx) })
 	}
 	wg.Go(func() { s.cleanupLoop(ctx) })
+	wg.Go(func() { s.statusLoop(ctx) })
 	if c.WorkerMode == "forward" {
 		wg.Go(func() {
 			for ctx.Err() == nil {
@@ -197,10 +207,12 @@ func run() error {
 		stop()
 	}
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	slog.Info("uploader stopping")
 	defer cancel()
 	_ = server.Shutdown(shutdownCtx)
 	stop()
 	wg.Wait()
+	slog.Info("uploader stopped")
 	if errors.Is(err, http.ErrServerClosed) {
 		err = nil
 	}

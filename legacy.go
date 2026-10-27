@@ -139,11 +139,13 @@ func (s *Server) receiveLegacy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	registered = true
+	slog.Info("file received", "upload_id", m.UploadID, "file", f.ID, "index", f.Index, "bytes", f.Size)
 	hash, duplicate, err := s.S.seal(m.UploadID)
 	if err != nil {
 		reject(w, 500, err)
 		return
 	}
+	logGroupReceived(m, hash, duplicate)
 	respond(w, 200, map[string]any{"status": true, "code": 200, "msg": "accepted", "accepted": true, "duplicate": duplicate, "imgid": hash, "upload_id": m.UploadID, "data": map[string]any{"md5": f.MD5, "sha256": hash}})
 }
 

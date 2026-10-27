@@ -26,6 +26,17 @@ Linux 服务器也可在镜像已拉取或导入后执行 `sh deploy/start.sh`�
 
 123 盘明确返回 `completed=true` 与文件 ID 后才删除本地原图。上传失败保留磁盘文件并重试。SQLite WAL 和少量元数据不计入 1 GiB **图片配额**，须额外预留磁盘；默认还保留 256 MiB 磁盘余量。重启清理无登记的临时图片，恢复上传和未确认通知。
 
+## 运行日志
+
+在 A 的部署目录执行 `docker compose logs -f --tail 100 uploader`。默认 INFO 日志覆盖关键状态：
+
+- `upload initialized`、`file received`、`upload group received`：登记、单文件落盘、整组接收完成；`duplicate` 表示是否复用已有图片组。
+- `upload retry` → `cloud upload completed` → `local file cleared`：失败保留文件、10 秒后重试；云盘成功记录 `remote_id`，本地清理后记录剩余暂存用量。
+- `batch ready` → `batch sent` → `batch accepted`：半小时批次生成、发给 B、B 持久化确认；确认接收不代表识别已经结束。
+- `uploader status`：启动时及每分钟输出待上传/上传中文件数、待确认批次、暂存已用/预留、B 连接状态和下次调度时间。重复组等待清理的文件不算上传积压。
+
+按 `upload_id`、`file` 或 `batch_id` 关联记录。日志不输出密钥、提交人、原图内容或每个传输缓冲；健康探测不逐次记录。默认镜像的日志时间及 `next_dispatch_at` 使用 UTC，北京时间需加 8 小时。Compose 对日志轮转，最多保留 3 × 10 MiB。
+
 ## 上传协议
 
 ### 按文件上传（Cloudflare Tunnel 推荐）

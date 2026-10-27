@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
@@ -262,6 +263,11 @@ func (s *Store) removeFile(f File) error {
 		return err
 	}
 	_, err := s.DB.Exec(`UPDATE files SET path='' WHERE id=?`, f.ID)
+	if err == nil {
+		used, reserved := s.Quota.snapshot()
+		slog.Info("local file cleared", "file", f.ID, "bytes", f.Size,
+			"spool_used", used, "spool_reserved", reserved)
+	}
 	return err
 }
 
@@ -364,5 +370,7 @@ func (s *Store) makeBatch(size int) (*Batch, error) {
 	if err = tx.Commit(); err != nil {
 		return nil, err
 	}
+	slog.Info("batch ready", "batch_id", b.ID, "groups", len(b.Items),
+		"window_start", b.WindowStart, "window_end", b.WindowEnd)
 	return b, nil
 }

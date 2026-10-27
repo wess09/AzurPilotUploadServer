@@ -50,6 +50,8 @@ func (s *Server) initialize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer s.releaseGroup(m.UploadID)
+	slog.Info("upload initialized", "upload_id", m.UploadID, "project", m.Project,
+		"scene", m.Scene, "files", len(m.Sizes))
 	respond(w, 202, map[string]any{"accepted": true, "upload_id": m.UploadID})
 }
 
@@ -128,6 +130,7 @@ func (s *Server) receiveFile(w http.ResponseWriter, r *http.Request) {
 			reject(w, 409, fmt.Errorf("file differs from previous attempt"))
 			return
 		}
+		slog.Info("file reused", "upload_id", m.UploadID, "file", f.ID, "index", i, "bytes", n)
 	} else if errors.Is(err, sql.ErrNoRows) {
 		err = s.savePart(r.Context(), m.UploadID, i, n, r.Body)
 		if err != nil {
@@ -173,5 +176,6 @@ func (s *Server) complete(w http.ResponseWriter, r *http.Request) {
 		reject(w, 500, err)
 		return
 	}
+	logGroupReceived(m, hash, duplicate)
 	respond(w, 202, map[string]any{"accepted": true, "upload_id": m.UploadID, "sha256": hash, "duplicate": duplicate})
 }

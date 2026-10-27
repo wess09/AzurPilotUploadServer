@@ -209,6 +209,7 @@ func (s *Server) receive(w http.ResponseWriter, r *http.Request) {
 		reject(w, 500, err)
 		return
 	}
+	logGroupReceived(m, hash, duplicate)
 	respond(w, 202, map[string]any{"accepted": true, "upload_id": m.UploadID, "sha256": hash, "duplicate": duplicate})
 }
 
@@ -276,10 +277,12 @@ func (s *Server) savePart(ctx context.Context, group string, index int, n int64,
 	s.S.Quota.finish(n, n)
 	reserved = false
 	counted = true
-	if _, err = s.S.DB.ExecContext(ctx, `INSERT INTO files(id,group_id,idx,path,size,md5,sha) VALUES(?,?,?,?,?,?,?)`, newID(), group, index, path, n, hex.EncodeToString(md.Sum(nil)), hex.EncodeToString(sha.Sum(nil))); err != nil {
+	fileID := newID()
+	if _, err = s.S.DB.ExecContext(ctx, `INSERT INTO files(id,group_id,idx,path,size,md5,sha) VALUES(?,?,?,?,?,?,?)`, fileID, group, index, path, n, hex.EncodeToString(md.Sum(nil)), hex.EncodeToString(sha.Sum(nil))); err != nil {
 		return err
 	}
 	saved = true
+	slog.Info("file received", "upload_id", group, "file", fileID, "index", index, "bytes", n)
 	return nil
 }
 
@@ -308,22 +311,28 @@ func (s *Server) uploadLoop(ctx context.Context) {
 			}
 			continue
 		}
+		started := time.Now()
 		uploadCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 		id, e := s.Pan.Upload(uploadCtx, f)
 		cancel()
 		if e != nil {
 			_, err = s.S.DB.Exec(`UPDATE files SET state='pending',retry_at=?,error=? WHERE id=?`, time.Now().Add(10*time.Second).Unix(), e.Error(), f.ID)
-			slog.Warn("upload retry", "file", f.ID, "error", e)
+			slog.Warn("upload retry", "upload_id", f.Group, "file", f.ID, "index", f.Index,
+				"bytes", f.Size, "retry_in", "10s", "error", e)
 		} else if id <= 0 {
 			_, err = s.S.DB.Exec(`UPDATE files SET state='pending',retry_at=?,error='missing cloud file ID' WHERE id=?`, time.Now().Add(10*time.Second).Unix(), f.ID)
+			slog.Warn("upload retry", "upload_id", f.Group, "file", f.ID,
+				"retry_in", "10s", "error", "missing cloud file ID")
 		} else {
 			_, err = s.S.DB.Exec(`UPDATE files SET state='uploaded',remote_id=?,error='' WHERE id=?`, id, f.ID)
 			if err == nil {
+				slog.Info("cloud upload completed", "upload_id", f.Group, "file", f.ID, "index", f.Index,
+					"remote_id", id, "bytes", f.Size, "duration_ms", time.Since(started).Milliseconds())
 				err = s.S.removeFile(f)
 			}
 		}
 		if err != nil {
-			slog.Error("save upload state", "error", err)
+			slog.Error("save upload state", "upload_id", f.Group, "file", f.ID, "error", err)
 		}
 	}
 }

@@ -65,8 +65,7 @@ func (s *Server) Handler() http.Handler {
 	m.HandleFunc("POST /api/v1/uploads", s.receive)
 	m.HandleFunc("/api/upload", legacyPublic(s.receiveLegacy))
 	m.HandleFunc("/api/upload/{$}", legacyPublic(s.receiveLegacy))
-	m.HandleFunc("/api/telemetry/stats/stream", s.redirectLegacyStatistics)
-	for _, path := range []string{"/api/data/opsi_items", "/api/azurstat", "/api/azurstat/stats", "/api/azurstat/items", "/api/azurstat/history", "/api/azurstat/filters", "/api/telemetry", "/api/telemetry/stats", "/api/telemetry/history", "/api/telemetry/global_history", "/api/get/announcement", "/api/force_update", "/api/maintenance"} {
+	for _, path := range []string{"/api/data/opsi_items", "/api/telemetry", "/api/get/announcement", "/api/force_update", "/api/maintenance"} {
 		m.HandleFunc(path, s.redirectLegacyStatistics)
 	}
 	m.HandleFunc("POST /api/v1/uploads/init", s.initialize)

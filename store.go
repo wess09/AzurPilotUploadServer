@@ -91,6 +91,7 @@ func openStore(c Config) (*Store, error) {
 CREATE TABLE IF NOT EXISTS uploads(id TEXT PRIMARY KEY, metadata TEXT NOT NULL, hash TEXT UNIQUE, state TEXT NOT NULL DEFAULT 'receiving', busy INTEGER NOT NULL DEFAULT 0, batch_id TEXT, canonical TEXT, created_at INTEGER NOT NULL, protocol INTEGER NOT NULL DEFAULT 1);
 CREATE TABLE IF NOT EXISTS files(id TEXT PRIMARY KEY, group_id TEXT NOT NULL REFERENCES uploads(id), idx INTEGER NOT NULL, path TEXT NOT NULL, size INTEGER NOT NULL, md5 TEXT NOT NULL, sha TEXT NOT NULL, remote_id INTEGER NOT NULL DEFAULT 0, state TEXT NOT NULL DEFAULT 'pending', retry_at INTEGER NOT NULL DEFAULT 0, error TEXT NOT NULL DEFAULT '', UNIQUE(group_id,idx));
 CREATE INDEX IF NOT EXISTS files_pending ON files(state,retry_at);
+CREATE INDEX IF NOT EXISTS files_uploaded_content ON files(sha,md5,size) WHERE state='uploaded' AND remote_id>0;
 CREATE TABLE IF NOT EXISTS direct_files(file_id TEXT PRIMARY KEY REFERENCES files(id),preupload_id TEXT NOT NULL DEFAULT '',slice_size INTEGER NOT NULL DEFAULT 0,completing INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS batches(id TEXT PRIMARY KEY, payload TEXT NOT NULL, acked INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS dispatch_state(id INTEGER PRIMARY KEY CHECK(id=1),next_at INTEGER NOT NULL);

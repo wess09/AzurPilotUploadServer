@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"embed"
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"sync"
 	"time"
@@ -37,20 +39,30 @@ func (s *Server) queueSummary(ctx context.Context) monitorQueue {
 	if time.Now().Before(s.monitor.expires) {
 		return s.monitor.queue
 	}
-	// All viewers share this cache. Monitoring never occupies an upload slot or
-	// waits indefinitely for SQLite while the single writer is busy.
-	ctx, cancel := context.WithTimeout(ctx, 750*time.Millisecond)
+	// Use an independent, query-only connection: the upload pool deliberately
+	// has just one connection and may be continuously occupied by control calls.
+	// WAL permits these reads alongside uploads. Only one refresh per cache TTL
+	// opens this connection, and it is closed immediately after the two queries.
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 	var q monitorQueue
-	err := s.S.DB.QueryRowContext(ctx, `SELECT
+	db, err := sql.Open("sqlite", filepath.Join(s.C.DataDir, "state.sqlite"))
+	if err == nil {
+		defer db.Close()
+		db.SetMaxOpenConns(1)
+		_, err = db.ExecContext(ctx, `PRAGMA query_only=ON; PRAGMA busy_timeout=1000`)
+	}
+	if err == nil {
+		err = db.QueryRowContext(ctx, `SELECT
  count(*) FILTER(WHERE f.state='pending' AND u.state<>'duplicate'),
  count(*) FILTER(WHERE f.state='uploading'),
  count(*) FILTER(WHERE f.state='direct_pending' AND u.state<>'duplicate'),
  count(*) FILTER(WHERE f.state='pending' AND f.error<>'' AND u.state<>'duplicate'),
  count(*) FILTER(WHERE f.state='uploaded')
  FROM files f JOIN uploads u ON u.id=f.group_id`).Scan(&q.Pending, &q.Uploading, &q.DirectPending, &q.Retry, &q.Uploaded)
+	}
 	if err == nil {
-		err = s.S.DB.QueryRowContext(ctx, `SELECT
+		err = db.QueryRowContext(ctx, `SELECT
  (SELECT count(*) FROM batches WHERE acked=0),
  (SELECT next_at FROM dispatch_state WHERE id=1)`).Scan(&q.Batches, &q.NextDispatch)
 	}

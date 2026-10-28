@@ -15,8 +15,8 @@ type transferCounts struct {
 }
 
 type transferBucket struct {
-	second           int64
-	download, upload transferCounts
+	second                   int64
+	download, upload, direct transferCounts
 }
 
 type transferRate struct {
@@ -34,16 +34,17 @@ type transferSnapshot struct {
 	AverageWindowSeconds int          `json:"average_window_seconds"`
 	Download             transferRate `json:"download"`
 	Upload               transferRate `json:"upload"`
+	DirectUpload         transferRate `json:"direct_upload"`
 }
 
 // Track successful file completions, not groups. A fixed ring keeps memory
 // independent of file size, request count and process lifetime.
 type transferMetrics struct {
-	mu               sync.Mutex
-	now              func() time.Time
-	since            time.Time
-	buckets          [transferAverageWindow]transferBucket
-	download, upload transferCounts
+	mu                       sync.Mutex
+	now                      func() time.Time
+	since                    time.Time
+	buckets                  [transferAverageWindow]transferBucket
+	download, upload, direct transferCounts
 }
 
 func newTransferMetrics(now func() time.Time) *transferMetrics {
@@ -51,6 +52,16 @@ func newTransferMetrics(now func() time.Time) *transferMetrics {
 }
 
 func (m *transferMetrics) record(upload bool, size int64) {
+	direction := 0
+	if upload {
+		direction = 1
+	}
+	m.recordDirection(direction, size)
+}
+
+func (m *transferMetrics) recordDirect(size int64) { m.recordDirection(2, size) }
+
+func (m *transferMetrics) recordDirection(direction int, size int64) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	second := m.now().Unix()
@@ -59,8 +70,10 @@ func (m *transferMetrics) record(upload bool, size int64) {
 		*b = transferBucket{second: second}
 	}
 	counts, total := &b.download, &m.download
-	if upload {
+	if direction == 1 {
 		counts, total = &b.upload, &m.upload
+	} else if direction == 2 {
+		counts, total = &b.direct, &m.direct
 	}
 	counts.Images++
 	counts.Bytes += size
@@ -74,6 +87,7 @@ func (m *transferMetrics) snapshot() transferSnapshot {
 	now := m.now()
 	second := now.Unix()
 	var down, up, down60, up60 transferCounts
+	var direct, direct60 transferCounts
 	for _, b := range m.buckets {
 		age := second - b.second
 		if age < 0 || age >= transferAverageWindow {
@@ -83,11 +97,15 @@ func (m *transferMetrics) snapshot() transferSnapshot {
 		down60.Bytes += b.download.Bytes
 		up60.Images += b.upload.Images
 		up60.Bytes += b.upload.Bytes
+		direct60.Images += b.direct.Images
+		direct60.Bytes += b.direct.Bytes
 		if age < transferWindow {
 			down.Images += b.download.Images
 			down.Bytes += b.download.Bytes
 			up.Images += b.upload.Images
 			up.Bytes += b.upload.Bytes
+			direct.Images += b.direct.Images
+			direct.Bytes += b.direct.Bytes
 		}
 	}
 	seconds := max(1, min(float64(transferWindow), now.Sub(m.since).Seconds()))
@@ -104,6 +122,7 @@ func (m *transferMetrics) snapshot() transferSnapshot {
 	return transferSnapshot{
 		Since: m.since.UTC(), SampledAt: now.UTC(), WindowSeconds: transferWindow, AverageWindowSeconds: transferAverageWindow,
 		Download: rate(down, down60, m.download), Upload: rate(up, up60, m.upload),
+		DirectUpload: rate(direct, direct60, m.direct),
 	}
 }
 

@@ -18,6 +18,7 @@ import (
 type PanClient struct {
 	Client                 *http.Client
 	Base, ClientID, Secret string
+	ParentID               int64
 	mu                     sync.Mutex
 	token                  string
 	expires                time.Time
@@ -128,7 +129,7 @@ func (p *PanClient) Upload(ctx context.Context, f File) (int64, error) {
 	// HTTP transport with an exact Content-Length, including multipart overhead.
 	var headers bytes.Buffer
 	mw := multipart.NewWriter(&headers)
-	for _, field := range [][2]string{{"parentFileID", env("PAN_PARENT_FILE_ID", "0")}, {"filename", f.SHA256 + ".png"}, {"etag", f.MD5}, {"size", strconv.FormatInt(f.Size, 10)}, {"duplicate", "1"}} {
+	for _, field := range [][2]string{{"parentFileID", strconv.FormatInt(p.ParentID, 10)}, {"filename", f.SHA256 + ".png"}, {"etag", f.MD5}, {"size", strconv.FormatInt(f.Size, 10)}, {"duplicate", "1"}} {
 		if err = mw.WriteField(field[0], field[1]); err != nil {
 			return 0, err
 		}

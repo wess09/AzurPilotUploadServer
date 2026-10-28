@@ -15,6 +15,7 @@ type Config struct {
 	BatchInterval                                                                            time.Duration
 	WorkerMode                                                                               string
 	StatisticsURL                                                                            string
+	PanParentID                                                                              int64
 }
 
 func loadConfig() (Config, error) {
@@ -22,6 +23,10 @@ func loadConfig() (Config, error) {
 	c.WorkerMode = env("WORKER_MODE", "reverse")
 	c.StatisticsURL = os.Getenv("STATISTICS_PUBLIC_URL")
 	var err error
+	c.PanParentID, err = strconv.ParseInt(env("PAN_PARENT_FILE_ID", "0"), 10, 64)
+	if err != nil || c.PanParentID < 0 {
+		return c, fmt.Errorf("invalid PAN_PARENT_FILE_ID")
+	}
 	c.BatchInterval, err = time.ParseDuration(env("BATCH_INTERVAL", "30m"))
 	if err != nil || c.BatchInterval < time.Second || c.BatchInterval > 24*time.Hour || c.BatchInterval%time.Second != 0 {
 		return c, fmt.Errorf("BATCH_INTERVAL must be whole seconds between 1s and 24h")

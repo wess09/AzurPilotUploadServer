@@ -69,4 +69,9 @@ func (s *Server) logTransfers() {
 		"upload_mib_per_second", rounded(r.Upload.BytesPerSecond/(1<<20)),
 		"download_images_total", r.Download.Total.Images,
 		"upload_images_total", r.Upload.Total.Images)
+	d := r.DirectUpload
+	slog.Info("direct upload rates", "window_seconds", r.WindowSeconds,
+		"verified_images_per_second", d.ImagesPerSecond,
+		"verified_images_per_second_60s", d.ImagesPerSecond60s,
+		"verified_images_total", d.Total.Images)
 }

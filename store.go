@@ -88,13 +88,41 @@ func openStore(c Config) (*Store, error) {
 	}
 	s := &Store{DB: db, Dir: dir, Interval: interval, Now: time.Now, Quota: &Quota{Limit: c.SpoolBytes, MinFree: c.MinFreeBytes, Free: func() (int64, error) { return diskFree(dir) }}}
 	if _, err = db.Exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=5000;
-CREATE TABLE IF NOT EXISTS uploads(id TEXT PRIMARY KEY, metadata TEXT NOT NULL, hash TEXT UNIQUE, state TEXT NOT NULL DEFAULT 'receiving', busy INTEGER NOT NULL DEFAULT 0, batch_id TEXT, canonical TEXT, created_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS uploads(id TEXT PRIMARY KEY, metadata TEXT NOT NULL, hash TEXT UNIQUE, state TEXT NOT NULL DEFAULT 'receiving', busy INTEGER NOT NULL DEFAULT 0, batch_id TEXT, canonical TEXT, created_at INTEGER NOT NULL, protocol INTEGER NOT NULL DEFAULT 1);
 CREATE TABLE IF NOT EXISTS files(id TEXT PRIMARY KEY, group_id TEXT NOT NULL REFERENCES uploads(id), idx INTEGER NOT NULL, path TEXT NOT NULL, size INTEGER NOT NULL, md5 TEXT NOT NULL, sha TEXT NOT NULL, remote_id INTEGER NOT NULL DEFAULT 0, state TEXT NOT NULL DEFAULT 'pending', retry_at INTEGER NOT NULL DEFAULT 0, error TEXT NOT NULL DEFAULT '', UNIQUE(group_id,idx));
 CREATE INDEX IF NOT EXISTS files_pending ON files(state,retry_at);
+CREATE TABLE IF NOT EXISTS direct_files(file_id TEXT PRIMARY KEY REFERENCES files(id),preupload_id TEXT NOT NULL DEFAULT '',slice_size INTEGER NOT NULL DEFAULT 0,completing INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS batches(id TEXT PRIMARY KEY, payload TEXT NOT NULL, acked INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS dispatch_state(id INTEGER PRIMARY KEY CHECK(id=1),next_at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS dispatch_queue(group_id TEXT PRIMARY KEY,window_end INTEGER NOT NULL);
 UPDATE uploads SET busy=0; UPDATE files SET state='pending' WHERE state='uploading';`); err != nil {
+		db.Close()
+		return nil, err
+	}
+	// Existing v1 databases keep their rows and receive the protocol marker.
+	columns, err := db.Query(`PRAGMA table_info(uploads)`)
+	if err != nil {
+		db.Close()
+		return nil, err
+	}
+	hasProtocol := false
+	for columns.Next() {
+		var cid, notnull, pk int
+		var name, typ string
+		var value any
+		if err = columns.Scan(&cid, &name, &typ, &notnull, &value, &pk); err != nil {
+			break
+		}
+		hasProtocol = hasProtocol || name == "protocol"
+	}
+	if e := columns.Err(); err == nil {
+		err = e
+	}
+	columns.Close()
+	if err == nil && !hasProtocol {
+		_, err = db.Exec(`ALTER TABLE uploads ADD COLUMN protocol INTEGER NOT NULL DEFAULT 1`)
+	}
+	if err != nil {
 		db.Close()
 		return nil, err
 	}
@@ -165,17 +193,21 @@ UPDATE uploads SET busy=0; UPDATE files SET state='pending' WHERE state='uploadi
 }
 
 func (s *Store) claimGroup(m Metadata) error {
+	return s.claimGroupProtocol(m, 1)
+}
+
+func (s *Store) claimGroupProtocol(m Metadata, protocol int) error {
 	b, _ := json.Marshal(m)
-	_, err := s.DB.Exec(`INSERT INTO uploads(id,metadata,created_at) VALUES(?,?,?) ON CONFLICT(id) DO NOTHING`, m.UploadID, string(b), time.Now().Unix())
+	_, err := s.DB.Exec(`INSERT INTO uploads(id,metadata,created_at,protocol) VALUES(?,?,?,?) ON CONFLICT(id) DO NOTHING`, m.UploadID, string(b), time.Now().Unix(), protocol)
 	if err != nil {
 		return err
 	}
 	var original, state string
-	var busy int
-	if err = s.DB.QueryRow(`SELECT metadata,state,busy FROM uploads WHERE id=?`, m.UploadID).Scan(&original, &state, &busy); err != nil {
+	var busy, storedProtocol int
+	if err = s.DB.QueryRow(`SELECT metadata,state,busy,protocol FROM uploads WHERE id=?`, m.UploadID).Scan(&original, &state, &busy, &storedProtocol); err != nil {
 		return err
 	}
-	if original != string(b) {
+	if original != string(b) || storedProtocol != protocol {
 		return fmt.Errorf("upload_id metadata conflict")
 	}
 	if busy != 0 {

@@ -41,6 +41,7 @@ type Server struct {
 	C             Config
 	S             *Store
 	Pan           Uploader
+	Direct        DirectCloud
 	receivers     chan struct{}
 	workerSlot    chan struct{}
 	workerContext context.Context
@@ -48,7 +49,9 @@ type Server struct {
 }
 
 func newServer(c Config, s *Store, pan Uploader) *Server {
-	return &Server{C: c, S: s, Pan: pan, receivers: make(chan struct{}, c.ReceiveConcurrency), workerSlot: make(chan struct{}, 1), workerContext: context.Background(), transfers: newTransferMetrics(time.Now)}
+	server := &Server{C: c, S: s, Pan: pan, receivers: make(chan struct{}, c.ReceiveConcurrency), workerSlot: make(chan struct{}, 1), workerContext: context.Background(), transfers: newTransferMetrics(time.Now)}
+	server.Direct, _ = pan.(DirectCloud)
+	return server
 }
 func respond(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
@@ -72,11 +75,15 @@ func (s *Server) Handler() http.Handler {
 	m.HandleFunc("POST /api/v1/uploads/init", s.initialize)
 	m.HandleFunc("PUT /api/v1/uploads/{id}/files/{index}", s.receiveFile)
 	m.HandleFunc("POST /api/v1/uploads/{id}/complete", s.complete)
+	m.HandleFunc("POST /api/v2/uploads/init", s.initializeDirect)
+	m.HandleFunc("POST /api/v2/uploads/{id}/files/{index}/prepare", s.prepareDirect)
+	m.HandleFunc("POST /api/v2/uploads/{id}/files/{index}/complete", s.completeDirectFile)
+	m.HandleFunc("POST /api/v2/uploads/{id}/complete", s.completeDirect)
 	m.HandleFunc("GET /internal/v1/worker/connect", s.acceptWorker)
 	m.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		u, v := s.S.Quota.snapshot()
 		w.Header().Set("Cache-Control", "no-store")
-		respond(w, 200, map[string]any{"status": "ok", "spool_used": u, "spool_reserved": v, "spool_limit": s.C.SpoolBytes, "worker_connected": len(s.workerSlot) > 0, "worker_mode": s.C.WorkerMode, "batch_interval_seconds": int64(s.S.Interval / time.Second), "transfers": s.transfers.snapshot()})
+		respond(w, 200, map[string]any{"status": "ok", "upload_protocols": []int{1, 2}, "spool_used": u, "spool_reserved": v, "spool_limit": s.C.SpoolBytes, "worker_connected": len(s.workerSlot) > 0, "worker_mode": s.C.WorkerMode, "batch_interval_seconds": int64(s.S.Interval / time.Second), "transfers": s.transfers.snapshot()})
 	})
 	return m
 }

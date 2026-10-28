@@ -72,19 +72,29 @@ func (s *Server) releaseGroup(id string) {
 }
 
 func (s *Server) acquireGroup(w http.ResponseWriter, id string) (Metadata, bool) {
+	return s.acquireGroupProtocol(w, id, 1)
+}
+
+func (s *Server) acquireGroupProtocol(w http.ResponseWriter, id string, protocol int) (Metadata, bool) {
 	var m Metadata
 	if !uuidRE.MatchString(id) {
 		reject(w, 400, fmt.Errorf("invalid upload ID"))
 		return m, false
 	}
 	var data string
-	err := s.S.DB.QueryRow(`UPDATE uploads SET busy=1 WHERE id=? AND busy=0 RETURNING metadata`, id).Scan(&data)
+	var storedProtocol int
+	err := s.S.DB.QueryRow(`UPDATE uploads SET busy=1 WHERE id=? AND busy=0 RETURNING metadata,protocol`, id).Scan(&data, &storedProtocol)
 	if errors.Is(err, sql.ErrNoRows) {
 		reject(w, 409, fmt.Errorf("upload does not exist or is busy; initialize or retry"))
 		return m, false
 	}
 	if err != nil {
 		reject(w, 500, err)
+		return m, false
+	}
+	if storedProtocol != protocol {
+		s.releaseGroup(id)
+		reject(w, 409, fmt.Errorf("upload protocol version conflict"))
 		return m, false
 	}
 	if err = json.Unmarshal([]byte(data), &m); err != nil {

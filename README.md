@@ -57,6 +57,21 @@ INFO transfer rates window_seconds=10 download_images_per_second=3.2 upload_imag
 
 ## 上传协议
 
+### v2 客户端直传（新 AP 默认）
+
+图片正文由客户端直接 PUT 到 123 盘的 HTTPS 预签名地址，A 只接收控制 JSON，不占用图片暂存配额。现有 v1 与 `/api/upload` 保留原样。
+
+1. `POST /api/v2/uploads/init`：请求 `{"schema_version":2,"metadata":{...},"files":[{"md5":"32位小写哈希","sha256":"64位小写哈希"}]}`。`metadata` 使用下方现有元数据格式，`files` 按 `file_sizes` 的顺序排列。单文件 10 MiB、整组 500 MiB 的校验仍然有效；JSON 上限 256 KiB。
+2. `POST /api/v2/uploads/{id}/files/{index}/prepare`，空请求体：已验证文件返回 `completed:true`；否则返回 `parts`，每项包含 `number / offset / size / url`。客户端严格按该范围流式 PUT 到 `url`，不携带 A 或网盘账户的认证头，不跟随上传重定向。地址过期后重新 prepare；预上传任务持久化，可跨 A 重启恢复。
+3. `POST /api/v2/uploads/{id}/files/{index}/complete`，空请求体：A 自行向 123 盘请求完成/轮询，取得云端文件 ID；再查询文件详情，核验 **MD5、大小、目录、文件名及有效状态**。不接受客户端传入文件 ID。`completed:false` 时至少间隔一秒重试，`completed:true` 才算通过。
+4. 全部文件通过后 `POST /api/v2/uploads/{id}/complete`，返回组哈希与 `duplicate`，按原来的半小时边界派发 B。未完成的文件不能被 v1 的完成接口绕过校验，同一上传 ID 也不能混用协议。
+
+本系统的 v2 路由使用 123 盘官方 **V1 预签名上传 API**；这两个版本号互不关联。Client Secret、访问令牌和云端预上传 ID 留在 A，只把限定分片的预签名 URL 发给客户端。SHA-256 仍用于既有组标识、不可变文件名和 B 的下载复核；A 的云端验收使用 MD5。B/C 结果协议、原始采集时间及去重后的统计口径保持兼容。
+
+SQLite 自动为旧 `uploads` 添加 `protocol=1`，新 v2 任务使用 `direct_files` 保存上传进度；无需清空数据库。新 AP 的磁盘队列记录 `upload_version=2`，旧队列缺少该字段时继续使用 v1，不把已有任务切换到另一协议。
+
+`/healthz` 的 `transfers.direct_upload` 与 `direct upload rates` 日志显示已验证的直传张/秒及累计数，包含云盘内容复用。它与原来的 `download / upload` 分开，后两者仅表示图片经过 A 的接收和上传。
+
 ### 按文件上传（Cloudflare Tunnel 推荐）
 
 1. `POST /api/v1/uploads/init`：JSON 请求体为下方完整元数据，登记整组文件大小。返回 `202`；只登记，不预占整组磁盘。

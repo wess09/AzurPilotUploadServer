@@ -73,7 +73,8 @@
     set('queue-time', q.stale ? '摘要更新延迟' : '每 15 秒更新')
     set('receive-active', `${data.receive_active} / ${data.receive_limit}`)
     set('control-active', `${data.direct_control_active} · 独立处理`)
-    set('upload-active', q.available ? `${q.uploading} / ${data.upload_limit}` : `— / ${data.upload_limit}`)
+    const pool = data.uploads
+    set('upload-active', pool ? `${pool.active} / ${pool.limit} · 上限 ${pool.maximum}` : `— / ${data.upload_limit}`)
     set('next-dispatch', q.available && q.next_dispatch ? shortTime.format(new Date(q.next_dispatch * 1000)) : '—')
     pill('worker-state', data.worker_connected ? 'B 已连接' : 'B 未连接', data.worker_connected ? 'ok' : 'warn')
     set('worker-badge', data.worker_connected ? 'B 在线 · 下载校验' : 'B 离线')
@@ -81,6 +82,7 @@
     set('lifetime', `累计与趋势自 ${clock.format(new Date(t.since))} 服务启动起计 · 重启清零`)
     set('chart-summary', `5 秒采样 · 最近 ${range === 900 ? '15 分钟' : '1 小时'} · 卡片为 10 秒均速 · 支持悬停查看`)
     const notices = []
+    if (pool && pool.backoff_seconds > 0) notices.push(`123 盘返回 429，暂停新上传 ${pool.backoff_seconds} 秒；当前并发 ${pool.limit}，累计限流 ${pool.rate_limited_total} 次。`)
     if (ratio >= 95) notices.push('暂存接近满额，新的 v1 图片可能等待空间释放。v2 直传不占暂存配额。')
     if (!data.worker_connected) notices.push('B 暂未连接，已完成的图片组会保留并等待派发。')
     if (q.stale) notices.push('队列摘要暂未刷新，当前展示上一次成功读取的结果。')

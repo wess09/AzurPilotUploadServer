@@ -71,6 +71,9 @@ func (p *PanClient) directAPI(ctx context.Context, path string, body any, result
 	if err = p.do(req, &out); err != nil {
 		return err
 	}
+	if out.Code == 429 {
+		return p.rateLimited(0)
+	}
 	if out.Code == 401 {
 		p.mu.Lock()
 		p.token = ""

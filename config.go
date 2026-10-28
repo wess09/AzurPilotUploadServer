@@ -10,6 +10,7 @@ import (
 type Config struct {
 	Addr, DataDir, WorkerURL, WorkerToken, PanID, PanSecret, PanBase, AccessID, AccessSecret string
 	ReceiveConcurrency, UploadConcurrency, BatchSize                                         int
+	UploadMaxConcurrency                                                                     int
 	SpoolBytes, FileBytes, GroupBytes, MinFreeBytes                                          int64
 	Poll                                                                                     time.Duration
 	BatchInterval                                                                            time.Duration
@@ -38,12 +39,15 @@ func loadConfig() (Config, error) {
 		name     string
 		dst      *int
 		fallback int
-	}{{"RECEIVE_CONCURRENCY", &c.ReceiveConcurrency, 30}, {"UPLOAD_CONCURRENCY", &c.UploadConcurrency, 2}, {"BATCH_SIZE", &c.BatchSize, 30}} {
+	}{{"RECEIVE_CONCURRENCY", &c.ReceiveConcurrency, 30}, {"UPLOAD_CONCURRENCY", &c.UploadConcurrency, 10}, {"UPLOAD_MAX_CONCURRENCY", &c.UploadMaxConcurrency, 500}, {"BATCH_SIZE", &c.BatchSize, 30}} {
 		n, e := strconv.Atoi(env(v.name, strconv.Itoa(v.fallback)))
 		if e != nil || n < 1 {
 			return c, fmt.Errorf("invalid %s", v.name)
 		}
 		*v.dst = n
+	}
+	if c.UploadMaxConcurrency < c.UploadConcurrency || c.UploadMaxConcurrency > 500 {
+		return c, fmt.Errorf("upload concurrency must satisfy 1 <= UPLOAD_CONCURRENCY <= UPLOAD_MAX_CONCURRENCY <= 500")
 	}
 	for _, v := range []struct {
 		name     string

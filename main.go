@@ -180,13 +180,11 @@ func run() error {
 	s := newServer(c, st, &PanClient{Client: &http.Client{Timeout: 5 * time.Minute, Transport: cloudTransport}, Base: c.PanBase, ClientID: c.PanID, Secret: c.PanSecret, ParentID: c.PanParentID})
 	s.workerContext = ctx
 	slog.Info("uploader starting", "listen", c.Addr, "receive_concurrency", c.ReceiveConcurrency,
-		"upload_concurrency", c.UploadConcurrency, "file_limit", c.FileBytes, "group_limit", c.GroupBytes,
+		"upload_concurrency_min", c.UploadConcurrency, "upload_concurrency_max", c.UploadMaxConcurrency, "file_limit", c.FileBytes, "group_limit", c.GroupBytes,
 		"spool_limit", c.SpoolBytes, "batch_interval", st.Interval.String(), "worker_mode", c.WorkerMode)
 	s.logStatus(ctx)
 	var wg sync.WaitGroup
-	for range c.UploadConcurrency {
-		wg.Go(func() { s.uploadLoop(ctx) })
-	}
+	wg.Go(func() { s.runUploads(ctx) })
 	wg.Go(func() { s.cleanupLoop(ctx) })
 	wg.Go(func() { s.statusLoop(ctx) })
 	if c.WorkerMode == "forward" {

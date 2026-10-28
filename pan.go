@@ -22,7 +22,11 @@ type PanClient struct {
 	mu                     sync.Mutex
 	token                  string
 	expires                time.Time
-	lastRequest            time.Time
+	onThrottle             func(time.Duration) time.Duration
+	backoff                func() time.Duration
+	domainMu               sync.Mutex
+	domain                 string
+	domainUntil            time.Time
 }
 
 func (p *PanClient) access(ctx context.Context) (string, error) {
@@ -49,6 +53,9 @@ func (p *PanClient) access(ctx context.Context) (string, error) {
 	if err = p.do(req, &out); err != nil {
 		return "", err
 	}
+	if out.Code == 429 {
+		return "", p.rateLimited(0)
+	}
 	if out.Code != 0 || out.Data.Token == "" {
 		return "", fmt.Errorf("123 token: %s", out.Message)
 	}
@@ -60,11 +67,19 @@ func (p *PanClient) access(ctx context.Context) (string, error) {
 	return p.token, nil
 }
 func (p *PanClient) do(req *http.Request, out any) error {
+	if p.backoff != nil {
+		if delay := p.backoff(); delay > 0 {
+			return &cloudThrottleError{RetryAfter: delay}
+		}
+	}
 	resp, err := p.Client.Do(req)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusTooManyRequests {
+		return p.rateLimited(retryAfter(resp.Header.Get("Retry-After"), time.Now()))
+	}
 	if resp.StatusCode != 200 {
 		if resp.StatusCode == 401 && !strings.HasSuffix(req.URL.Path, "/access_token") {
 			p.mu.Lock()
@@ -73,31 +88,34 @@ func (p *PanClient) do(req *http.Request, out any) error {
 		}
 		return fmt.Errorf("123 HTTP %d", resp.StatusCode)
 	}
+	// Bound a stalled JSON response after the image has already been sent.
+	timer := time.AfterFunc(30*time.Second, func() { _ = resp.Body.Close() })
+	defer timer.Stop()
 	return json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(out)
 }
-func (p *PanClient) Upload(ctx context.Context, f File) (int64, error) {
-	token, err := p.access(ctx)
-	if err != nil {
-		return 0, err
+
+func (p *PanClient) rateLimited(delay time.Duration) error {
+	if p.onThrottle != nil {
+		delay = p.onThrottle(delay)
 	}
-	// Pace control calls across the two workers; do not buffer image payloads.
-	p.mu.Lock()
-	wait := time.Until(p.lastRequest.Add(550 * time.Millisecond))
-	if wait < 0 {
-		wait = 0
+	if delay <= 0 {
+		delay = 10 * time.Second
 	}
-	p.lastRequest = time.Now().Add(wait)
-	p.mu.Unlock()
-	timer := time.NewTimer(wait)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return 0, ctx.Err()
-	case <-timer.C:
+	return &cloudThrottleError{RetryAfter: delay}
+}
+
+func (p *PanClient) uploadDomain(ctx context.Context, token string) (string, error) {
+	p.domainMu.Lock()
+	defer p.domainMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	if p.domain != "" && time.Now().Before(p.domainUntil) {
+		return p.domain, nil
 	}
 	req, err := http.NewRequestWithContext(ctx, "GET", p.Base+"/upload/v2/file/domain", nil)
 	if err != nil {
-		return 0, err
+		return "", err
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Platform", "open_platform")
@@ -107,18 +125,31 @@ func (p *PanClient) Upload(ctx context.Context, f File) (int64, error) {
 		Data    []string `json:"data"`
 	}
 	if err = p.do(req, &domain); err != nil {
-		return 0, err
+		return "", err
+	}
+	if domain.Code == 429 {
+		return "", p.rateLimited(0)
 	}
 	if domain.Code == 401 {
 		p.mu.Lock()
 		p.token = ""
 		p.mu.Unlock()
 	}
-	if domain.Code != 0 || len(domain.Data) == 0 {
-		return 0, fmt.Errorf("123 domain: %s", domain.Message)
+	if domain.Code != 0 || len(domain.Data) == 0 || !strings.HasPrefix(domain.Data[0], "https://") {
+		return "", fmt.Errorf("123 upload domain unavailable: %d %s", domain.Code, domain.Message)
 	}
-	if !strings.HasPrefix(domain.Data[0], "https://") {
-		return 0, fmt.Errorf("123 upload domain must use HTTPS")
+	p.domain, p.domainUntil = domain.Data[0], time.Now().Add(time.Minute)
+	return p.domain, nil
+}
+
+func (p *PanClient) Upload(ctx context.Context, f File) (int64, error) {
+	token, err := p.access(ctx)
+	if err != nil {
+		return 0, err
+	}
+	domain, err := p.uploadDomain(ctx, token)
+	if err != nil {
+		return 0, err
 	}
 	file, err := os.Open(f.Path)
 	if err != nil {
@@ -143,7 +174,7 @@ func (p *PanClient) Upload(ctx context.Context, f File) (int64, error) {
 	}
 	raw := headers.Bytes()
 	body := io.MultiReader(bytes.NewReader(raw[:headN]), file, bytes.NewReader(raw[headN:]))
-	req, err = http.NewRequestWithContext(ctx, "POST", strings.TrimRight(domain.Data[0], "/")+"/upload/v2/file/single/create", body)
+	req, err := http.NewRequestWithContext(ctx, "POST", strings.TrimRight(domain, "/")+"/upload/v2/file/single/create", body)
 	if err != nil {
 		return 0, err
 	}
@@ -161,6 +192,9 @@ func (p *PanClient) Upload(ctx context.Context, f File) (int64, error) {
 	}
 	if err = p.do(req, &out); err != nil {
 		return 0, err
+	}
+	if out.Code == 429 {
+		return 0, p.rateLimited(0)
 	}
 	if out.Code == 401 {
 		p.mu.Lock()

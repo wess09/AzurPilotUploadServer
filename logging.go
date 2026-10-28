@@ -33,11 +33,14 @@ func (s *Server) logStatus(ctx context.Context) {
 		return
 	}
 	used, reserved := s.S.Quota.snapshot()
+	pool := s.uploads.snapshot()
 	slog.Info("uploader status", "receiving", len(s.receivers), "pending_files", pending,
 		"uploading_files", uploading, "unacked_batches", batches,
 		"spool_used", used, "spool_reserved", reserved, "spool_limit", s.C.SpoolBytes,
 		"worker_connected", len(s.workerSlot) > 0,
 		"direct_control_active", s.controlActive.Load(),
+		"upload_concurrency", pool.Limit, "upload_concurrency_max", pool.Maximum,
+		"cloud_backoff_seconds", pool.BackoffSeconds, "cloud_429_total", pool.RateLimited,
 		"next_dispatch_at", time.Unix(next, 0).UTC().Format(time.RFC3339))
 }
 

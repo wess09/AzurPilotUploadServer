@@ -88,13 +88,14 @@ func (s *Server) monitorSnapshot(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	used, reserved := s.S.Quota.snapshot()
+	uploads := s.uploads.snapshot()
 	w.Header().Set("Cache-Control", "no-store")
 	respond(w, 200, map[string]any{
 		"status": "ok", "spool_used": used, "spool_reserved": reserved, "spool_limit": s.C.SpoolBytes,
 		"worker_connected": len(s.workerSlot) > 0, "worker_mode": s.C.WorkerMode,
 		"receive_active": len(s.receivers), "receive_limit": s.C.ReceiveConcurrency,
 		"direct_control_active": s.controlActive.Load(), "direct_upload_stage": "cloud_completed",
-		"upload_limit": s.C.UploadConcurrency, "batch_interval_seconds": int64(s.S.Interval / time.Second),
+		"upload_limit": uploads.Limit, "uploads": uploads, "batch_interval_seconds": int64(s.S.Interval / time.Second),
 		"transfers": s.transfers.snapshot(), "history": s.transfers.history(after),
 		"history_step_seconds": historyStepSeconds, "history_retention_seconds": historyStepSeconds * historySlots,
 		"queue": s.queueSummary(r.Context()),

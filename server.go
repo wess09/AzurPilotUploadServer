@@ -49,11 +49,16 @@ type Server struct {
 	transfers     *transferMetrics
 	monitor       monitorCache
 	controlActive atomic.Int64
+	uploads       *uploadControl
 }
 
 func newServer(c Config, s *Store, pan Uploader) *Server {
 	server := &Server{C: c, S: s, Pan: pan, receivers: make(chan struct{}, c.ReceiveConcurrency), workerSlot: make(chan struct{}, 1), workerContext: context.Background(), transfers: newTransferMetrics(time.Now)}
 	server.Direct, _ = pan.(DirectCloud)
+	server.uploads = newUploadControl(c.UploadConcurrency, c.UploadMaxConcurrency)
+	if client, ok := pan.(*PanClient); ok {
+		client.onThrottle, client.backoff = server.uploads.throttle, server.uploads.remaining
+	}
 	return server
 }
 func respond(w http.ResponseWriter, status int, v any) {
@@ -87,7 +92,7 @@ func (s *Server) Handler() http.Handler {
 	m.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		u, v := s.S.Quota.snapshot()
 		w.Header().Set("Cache-Control", "no-store")
-		respond(w, 200, map[string]any{"status": "ok", "upload_protocols": []int{1, 2}, "spool_used": u, "spool_reserved": v, "spool_limit": s.C.SpoolBytes, "worker_connected": len(s.workerSlot) > 0, "worker_mode": s.C.WorkerMode, "batch_interval_seconds": int64(s.S.Interval / time.Second), "direct_control_active": s.controlActive.Load(), "direct_upload_stage": "cloud_completed", "transfers": s.transfers.snapshot()})
+		respond(w, 200, map[string]any{"status": "ok", "upload_protocols": []int{1, 2}, "spool_used": u, "spool_reserved": v, "spool_limit": s.C.SpoolBytes, "worker_connected": len(s.workerSlot) > 0, "worker_mode": s.C.WorkerMode, "batch_interval_seconds": int64(s.S.Interval / time.Second), "direct_control_active": s.controlActive.Load(), "direct_upload_stage": "cloud_completed", "uploads": s.uploads.snapshot(), "transfers": s.transfers.snapshot()})
 	})
 	return m
 }

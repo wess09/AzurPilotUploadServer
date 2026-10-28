@@ -172,6 +172,12 @@ func (s *Server) confirmDirect(ctx context.Context, f File, id int64) error {
 
 func (s *Server) directFailure(w http.ResponseWriter, f File, err error) {
 	slog.Warn("direct upload control failed", "upload_id", f.Group, "file", f.ID, "error", err)
+	var limited *cloudThrottleError
+	if errors.As(err, &limited) {
+		w.Header().Set("Retry-After", strconv.FormatInt(max(1, int64((limited.RetryAfter+time.Second-1)/time.Second)), 10))
+		respond(w, http.StatusTooManyRequests, map[string]any{"error": "cloud rate limited; retry later"})
+		return
+	}
 	reject(w, 503, fmt.Errorf("cloud upload not completed; retry"))
 }
 

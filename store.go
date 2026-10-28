@@ -92,6 +92,9 @@ CREATE TABLE IF NOT EXISTS uploads(id TEXT PRIMARY KEY, metadata TEXT NOT NULL, 
 CREATE TABLE IF NOT EXISTS files(id TEXT PRIMARY KEY, group_id TEXT NOT NULL REFERENCES uploads(id), idx INTEGER NOT NULL, path TEXT NOT NULL, size INTEGER NOT NULL, md5 TEXT NOT NULL, sha TEXT NOT NULL, remote_id INTEGER NOT NULL DEFAULT 0, state TEXT NOT NULL DEFAULT 'pending', retry_at INTEGER NOT NULL DEFAULT 0, error TEXT NOT NULL DEFAULT '', UNIQUE(group_id,idx));
 CREATE INDEX IF NOT EXISTS files_pending ON files(state,retry_at);
 CREATE INDEX IF NOT EXISTS files_uploaded_content ON files(sha,md5,size) WHERE state='uploaded' AND remote_id>0;
+CREATE INDEX IF NOT EXISTS files_group_state ON files(group_id,state,idx,retry_at);
+CREATE INDEX IF NOT EXISTS uploads_state_created ON uploads(state,created_at);
+CREATE INDEX IF NOT EXISTS uploads_cleanup ON uploads(state,busy,created_at);
 CREATE TABLE IF NOT EXISTS direct_files(file_id TEXT PRIMARY KEY REFERENCES files(id),preupload_id TEXT NOT NULL DEFAULT '',slice_size INTEGER NOT NULL DEFAULT 0,completing INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS batches(id TEXT PRIMARY KEY, payload TEXT NOT NULL, acked INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS dispatch_state(id INTEGER PRIMARY KEY CHECK(id=1),next_at INTEGER NOT NULL);
@@ -281,7 +284,9 @@ func (s *Store) seal(id string) (string, bool, error) {
 // limited 123 Pan capacity and spool space on work B can never consume.
 func (s *Store) claimFile(ctx context.Context) (File, error) {
 	var f File
-	err := s.DB.QueryRowContext(ctx, `UPDATE files SET state='uploading' WHERE id=(SELECT f.id FROM files f JOIN uploads u ON u.id=f.group_id WHERE f.state='pending' AND f.retry_at<=? AND u.state='sealed' ORDER BY u.created_at,f.idx LIMIT 1) RETURNING id,group_id,idx,path,size,md5,sha,remote_id`, time.Now().Unix()).Scan(&f.ID, &f.Group, &f.Index, &f.Path, &f.Size, &f.MD5, &f.SHA256, &f.RemoteID)
+	// Start with sealed groups in arrival order. Starting with every pending
+	// file sorts the whole backlog on each claim and blocks all control APIs.
+	err := s.DB.QueryRowContext(ctx, `UPDATE files SET state='uploading' WHERE id=(SELECT f.id FROM uploads u CROSS JOIN files f INDEXED BY files_group_state WHERE u.state='sealed' AND f.group_id=u.id AND f.state='pending' AND f.retry_at<=? ORDER BY u.created_at,f.idx LIMIT 1) RETURNING id,group_id,idx,path,size,md5,sha,remote_id`, time.Now().Unix()).Scan(&f.ID, &f.Group, &f.Index, &f.Path, &f.Size, &f.MD5, &f.SHA256, &f.RemoteID)
 	return f, err
 }
 func (s *Store) removeFile(f File) error {

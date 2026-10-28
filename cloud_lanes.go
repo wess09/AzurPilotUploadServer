@@ -46,13 +46,15 @@ func (p *PanClient) lane(path string) *cloudLane {
 		return lane
 	}
 	gap := 20 * time.Millisecond
+	minimum := gap
 	if path == "/upload/v1/file/create" {
-		gap = 550 * time.Millisecond
+		gap = 250 * time.Millisecond
 	}
 	if path == "/api/v1/access_token" {
 		gap = time.Second
+		minimum = gap
 	}
-	lane := &cloudLane{gap: gap, minimum: gap, lastRaise: time.Now()}
+	lane := &cloudLane{gap: gap, minimum: minimum, lastRaise: time.Now()}
 	p.lanes[path] = lane
 	return lane
 }
@@ -106,10 +108,11 @@ func (p *PanClient) limitEndpoint(path string, delay time.Duration) error {
 	defer lane.mu.Unlock()
 	now := time.Now()
 	if !now.Before(lane.until) {
-		lane.gap = min(time.Second, lane.gap*2)
+		lane.gap = min(time.Second, lane.gap*3/2)
 		lane.generation++
 		lane.successes = 0
 		lane.limited++
+		lane.lastRaise = now
 		if delay <= 0 {
 			delay = 2 * time.Second
 		}

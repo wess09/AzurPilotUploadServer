@@ -264,7 +264,7 @@ func (s *Store) seal(id string) (string, bool, error) {
 	if !errors.Is(err, sql.ErrNoRows) {
 		return "", false, err
 	}
-	_, err = s.DB.Exec(`UPDATE uploads SET hash=?,state=CASE WHEN state='receiving' THEN 'sealed' ELSE state END WHERE id=?`, digest, id)
+	_, err = s.DB.Exec(`UPDATE uploads SET hash=?,state=CASE WHEN state IN ('receiving','abandoned') THEN 'sealed' ELSE state END WHERE id=?`, digest, id)
 	if err != nil { // A concurrent group may have sealed the same content.
 		if e := s.DB.QueryRow(`SELECT id FROM uploads WHERE hash=?`, digest).Scan(&canonical); e != nil {
 			return "", false, err
@@ -275,9 +275,12 @@ func (s *Store) seal(id string) (string, bool, error) {
 	return digest, false, nil
 }
 
+// Only sealed groups are cloud-bound. A group the client never finished
+// sending can never be dispatched, so uploading its files would spend the
+// limited 123 Pan capacity and spool space on work B can never consume.
 func (s *Store) claimFile(ctx context.Context) (File, error) {
 	var f File
-	err := s.DB.QueryRowContext(ctx, `UPDATE files SET state='uploading' WHERE id=(SELECT f.id FROM files f JOIN uploads u ON u.id=f.group_id WHERE f.state='pending' AND f.retry_at<=? AND u.state<>'duplicate' ORDER BY u.created_at,f.idx LIMIT 1) RETURNING id,group_id,idx,path,size,md5,sha,remote_id`, time.Now().Unix()).Scan(&f.ID, &f.Group, &f.Index, &f.Path, &f.Size, &f.MD5, &f.SHA256, &f.RemoteID)
+	err := s.DB.QueryRowContext(ctx, `UPDATE files SET state='uploading' WHERE id=(SELECT f.id FROM files f JOIN uploads u ON u.id=f.group_id WHERE f.state='pending' AND f.retry_at<=? AND u.state='sealed' ORDER BY u.created_at,f.idx LIMIT 1) RETURNING id,group_id,idx,path,size,md5,sha,remote_id`, time.Now().Unix()).Scan(&f.ID, &f.Group, &f.Index, &f.Path, &f.Size, &f.MD5, &f.SHA256, &f.RemoteID)
 	return f, err
 }
 func (s *Store) removeFile(f File) error {

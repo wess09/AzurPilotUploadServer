@@ -186,6 +186,7 @@ func run() error {
 	var wg sync.WaitGroup
 	wg.Go(func() { s.runUploads(ctx) })
 	wg.Go(func() { s.cleanupLoop(ctx) })
+	wg.Go(func() { s.expireLoop(ctx) })
 	wg.Go(func() { s.statusLoop(ctx) })
 	if c.WorkerMode == "forward" {
 		wg.Go(func() {

@@ -387,3 +387,104 @@ func (s *Server) cleanupLoop(ctx context.Context) {
 		}
 	}
 }
+
+// expireLoop reclaims spool space held by uploads a client never finished
+// sending. Those groups can never be dispatched, so keeping their files only
+// consumes the quota new uploads need.
+func (s *Server) expireLoop(ctx context.Context) {
+	if s.C.StaleUploadHours <= 0 {
+		return
+	}
+	t := time.NewTicker(10 * time.Minute)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		if _, e := s.expireStale(ctx); e != nil && ctx.Err() == nil {
+			slog.Warn("expire stale uploads", "error", e)
+		}
+	}
+}
+
+func (s *Server) expireStale(ctx context.Context) (int, error) {
+	if s.C.StaleUploadHours <= 0 {
+		return 0, nil
+	}
+	cutoff := time.Now().Add(-time.Duration(s.C.StaleUploadHours) * time.Hour).Unix()
+	rows, e := s.S.DB.QueryContext(ctx, `SELECT u.id FROM uploads u WHERE u.state='receiving' AND u.busy=0 AND u.created_at<? AND NOT EXISTS(SELECT 1 FROM files f WHERE f.group_id=u.id AND f.state='uploading') ORDER BY u.created_at LIMIT 200`, cutoff)
+	if e != nil {
+		return 0, e
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if e = rows.Scan(&id); e != nil {
+			break
+		}
+		ids = append(ids, id)
+	}
+	if x := rows.Err(); e == nil {
+		e = x
+	}
+	rows.Close()
+	if e != nil {
+		return 0, e
+	}
+	expired := 0
+	for _, id := range ids {
+		// The client keeps its own copy and re-initializes the same upload ID,
+		// so marking the group abandoned only drops this partial attempt.
+		res, x := s.S.DB.ExecContext(ctx, `UPDATE uploads SET state='abandoned' WHERE id=? AND state='receiving' AND busy=0`, id)
+		if x != nil {
+			return expired, x
+		}
+		if n, _ := res.RowsAffected(); n != 1 {
+			continue
+		}
+		files, x := s.expireGroupFiles(ctx, id)
+		if x != nil {
+			return expired, x
+		}
+		expired++
+		slog.Info("stale upload expired", "upload_id", id, "files", files, "age_hours", s.C.StaleUploadHours)
+	}
+	if expired > 0 {
+		used, reserved := s.S.Quota.snapshot()
+		slog.Info("stale uploads expired", "groups", expired, "spool_used", used, "spool_reserved", reserved)
+	}
+	return expired, nil
+}
+
+func (s *Server) expireGroupFiles(ctx context.Context, id string) (int, error) {
+	rows, e := s.S.DB.QueryContext(ctx, `SELECT id,path,size FROM files WHERE group_id=?`, id)
+	if e != nil {
+		return 0, e
+	}
+	var fs []File
+	for rows.Next() {
+		var f File
+		if e = rows.Scan(&f.ID, &f.Path, &f.Size); e != nil {
+			break
+		}
+		fs = append(fs, f)
+	}
+	if x := rows.Err(); e == nil {
+		e = x
+	}
+	rows.Close()
+	if e != nil {
+		return 0, e
+	}
+	for _, f := range fs {
+		if e = s.S.removeFile(f); e != nil {
+			return 0, e
+		}
+		if _, e = s.S.DB.ExecContext(ctx, `DELETE FROM files WHERE id=?`, f.ID); e != nil {
+			return 0, e
+		}
+	}
+	return len(fs), nil
+}

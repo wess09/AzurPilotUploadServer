@@ -17,6 +17,7 @@ type Config struct {
 	WorkerMode                                                                               string
 	StatisticsURL                                                                            string
 	PanParentID                                                                              int64
+	StaleUploadHours                                                                         int64
 }
 
 func loadConfig() (Config, error) {
@@ -53,12 +54,15 @@ func loadConfig() (Config, error) {
 		name     string
 		dst      *int64
 		fallback int64
-	}{{"SPOOL_MAX_BYTES", &c.SpoolBytes, 1 << 30}, {"MAX_FILE_BYTES", &c.FileBytes, 10 << 20}, {"MAX_GROUP_BYTES", &c.GroupBytes, 500 << 20}, {"MIN_FREE_BYTES", &c.MinFreeBytes, 256 << 20}} {
+	}{{"SPOOL_MAX_BYTES", &c.SpoolBytes, 1 << 30}, {"MAX_FILE_BYTES", &c.FileBytes, 10 << 20}, {"MAX_GROUP_BYTES", &c.GroupBytes, 500 << 20}, {"MIN_FREE_BYTES", &c.MinFreeBytes, 256 << 20}, {"STALE_UPLOAD_HOURS", &c.StaleUploadHours, 6}} {
 		n, e := strconv.ParseInt(env(v.name, strconv.FormatInt(v.fallback, 10)), 10, 64)
 		if e != nil || n < 0 {
 			return c, fmt.Errorf("invalid %s", v.name)
 		}
 		*v.dst = n
+	}
+	if c.StaleUploadHours > 24*30 {
+		return c, fmt.Errorf("STALE_UPLOAD_HOURS must be 0 (disabled) or at most 720")
 	}
 	if c.FileBytes < 1 || c.GroupBytes < c.FileBytes || c.SpoolBytes < c.FileBytes {
 		return c, fmt.Errorf("invalid file/group/spool limits")

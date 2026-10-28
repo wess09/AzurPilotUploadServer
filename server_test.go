@@ -164,32 +164,94 @@ func TestLimitsAndInterruptedReceive(t *testing.T) {
 		t.Fatalf("unexpected quota %d %d", u, r)
 	}
 }
-func TestCompleteFileDrainsBeforeGroupSeal(t *testing.T) {
+func TestUploadWaitsForGroupSeal(t *testing.T) {
 	c := testConfig(t)
 	data := pngData("first")
 	c.SpoolBytes, c.FileBytes = int64(len(data)), int64(len(data))
-	c.GroupBytes = c.FileBytes * 2
+	c.GroupBytes = c.FileBytes
 	s := newServer(c, opened(t, c), &testPan{})
-	m := metadata(4, data, data)
+	m := metadata(4, data)
 	if e := s.S.claimGroup(m); e != nil {
 		t.Fatal(e)
 	}
 	if e := s.savePart(context.Background(), m.UploadID, 0, int64(len(data)), bytes.NewReader(data)); e != nil {
 		t.Fatal(e)
 	}
+	s.releaseGroup(m.UploadID)
 	ctx, cancel := context.WithCancel(context.Background())
 	var wg sync.WaitGroup
 	wg.Go(func() { s.uploadLoop(ctx) })
 	defer func() { cancel(); wg.Wait() }()
+	time.Sleep(20 * time.Millisecond)
+	f, e := s.S.existing(m.UploadID, 0)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if f.RemoteID != 0 || f.Path == "" {
+		t.Fatalf("unsealed group reached the cloud: %+v", f)
+	}
+	if _, _, e = s.S.seal(m.UploadID); e != nil {
+		t.Fatal(e)
+	}
 	eventually(t, func() bool { f, e := s.S.existing(m.UploadID, 0); return e == nil && f.RemoteID > 0 && f.Path == "" })
 	u, r := s.S.Quota.snapshot()
 	if u != 0 || r != 0 {
 		t.Fatalf("file wasn't freed: %d %d", u, r)
 	}
+}
+func TestStaleUploadExpiryReclaimsSpoolAndResumes(t *testing.T) {
+	c := testConfig(t)
+	c.StaleUploadHours = 1
+	st := opened(t, c)
+	s := newServer(c, st, &testPan{})
+	data := pngData("stale")
+	m := metadata(7, data)
+	if e := s.S.claimGroup(m); e != nil {
+		t.Fatal(e)
+	}
+	if e := s.savePart(context.Background(), m.UploadID, 0, int64(len(data)), bytes.NewReader(data)); e != nil {
+		t.Fatal(e)
+	}
+	s.releaseGroup(m.UploadID)
+	fresh := metadata(8, data)
+	if e := s.S.claimGroup(fresh); e != nil {
+		t.Fatal(e)
+	}
+	if e := s.savePart(context.Background(), fresh.UploadID, 0, int64(len(data)), bytes.NewReader(data)); e != nil {
+		t.Fatal(e)
+	}
+	s.releaseGroup(fresh.UploadID)
+	if _, e := st.DB.Exec(`UPDATE uploads SET created_at=created_at-7200 WHERE id=?`, m.UploadID); e != nil {
+		t.Fatal(e)
+	}
+	expired, e := s.expireStale(context.Background())
+	if e != nil || expired != 1 {
+		t.Fatalf("expired %d %v", expired, e)
+	}
 	var state string
-	_ = s.S.DB.QueryRow(`SELECT state FROM uploads WHERE id=?`, m.UploadID).Scan(&state)
-	if state != "receiving" {
-		t.Fatal(state)
+	if e = st.DB.QueryRow(`SELECT state FROM uploads WHERE id=?`, m.UploadID).Scan(&state); e != nil || state != "abandoned" {
+		t.Fatalf("stale group kept state %q: %v", state, e)
+	}
+	var files int
+	if e = st.DB.QueryRow(`SELECT count(*) FROM files WHERE group_id=?`, m.UploadID).Scan(&files); e != nil || files != 0 {
+		t.Fatalf("stale files retained %d: %v", files, e)
+	}
+	if got, _ := st.Quota.snapshot(); got != int64(len(data)) {
+		t.Fatalf("quota not reclaimed: %d", got)
+	}
+	if e = st.DB.QueryRow(`SELECT state FROM uploads WHERE id=?`, fresh.UploadID).Scan(&state); e != nil || state != "receiving" {
+		t.Fatalf("fresh group expired: %q %v", state, e)
+	}
+	// The client retries the same upload ID: the attempt resumes and can seal.
+	if e = s.S.claimGroup(m); e != nil {
+		t.Fatal(e)
+	}
+	if e = s.savePart(context.Background(), m.UploadID, 0, int64(len(data)), bytes.NewReader(data)); e != nil {
+		t.Fatal(e)
+	}
+	s.releaseGroup(m.UploadID)
+	if _, duplicate, e := s.S.seal(m.UploadID); e != nil || duplicate {
+		t.Fatalf("resumed group did not seal: %v %v", duplicate, e)
 	}
 }
 func TestUploadFailurePreservesSpool(t *testing.T) {

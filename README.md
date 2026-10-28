@@ -22,7 +22,9 @@ Linux 服务器也可在镜像已拉取或导入后执行 `sh deploy/start.sh`�
 
 默认 30 路接收、2 路向云盘上传、1 GiB 图片暂存配额、每文件 10 MiB、每组 500 MiB，64 KiB 拷贝缓冲。`.env.example` 可调这些限制；B/C 的协议校验上限需同步调整。`BATCH_INTERVAL=30m` 按每小时的 :00/:30 派发；`BATCH_SIZE=30` 仅限制单条传输消息容量，不是触发门槛。
 
-接收前逐文件预留空间；已写入部分也被该预留覆盖。空间不足返回 `503`，并发耗尽返回 `429`，均带 `Retry-After`。上传读取空闲超过 30 秒会中断。客户端保持原 `upload_id`、元数据及文件顺序重传整组，已收到文件会验证哈希后复用。完整文件立即进入上传处理，不等整组完成。
+接收前逐文件预留空间；已写入部分也被该预留覆盖。空间不足返回 `503`，并发耗尽返回 `429`，均带 `Retry-After`。上传读取空闲超过 30 秒会中断。客户端保持原 `upload_id`、元数据及文件顺序重传整组，已收到文件会验证哈希后复用。**只有整组接收完成并密封后才进入云盘上传队列**；客户端中途放弃的组不会再占用上传名额和云盘流量。
+
+客户端未完成的组在 `STALE_UPLOAD_HOURS`（默认 6 小时，0 关闭）后标记为 `abandoned`，删除其暂存原图和文件记录以回收配额。客户端保有自己的截图副本，重试时用同一 `upload_id` 重新初始化即可继续；恢复后的组仍能正常密封。该清理每 10 分钟执行一次，不处理正在接收或仍有文件在传输的组。
 
 123 盘明确返回 `completed=true` 与文件 ID 后才删除本地原图。上传失败保留磁盘文件并重试。SQLite WAL 和少量元数据不计入 1 GiB **图片配额**，须额外预留磁盘；默认还保留 256 MiB 磁盘余量。重启清理无登记的临时图片，恢复上传和未确认通知。
 
@@ -32,6 +34,7 @@ Linux 服务器也可在镜像已拉取或导入后执行 `sh deploy/start.sh`�
 
 - `upload initialized`、`file received`、`upload group received`：登记、单文件落盘、整组接收完成；`duplicate` 表示是否复用已有图片组。
 - `upload retry` → `cloud upload completed` → `local file cleared`：失败保留文件、10 秒后重试；云盘成功记录 `remote_id`，本地清理后记录剩余暂存用量。
+- `stale upload expired`：回收客户端未完成组的暂存空间和文件记录。
 - `batch ready` → `batch sent` → `batch accepted`：半小时批次生成、发给 B、B 持久化确认；确认接收不代表识别已经结束。
 - `uploader status`：启动时及每分钟输出待上传/上传中文件数、待确认批次、暂存已用/预留、B 连接状态和下次调度时间。重复组等待清理的文件不算上传积压。
 
@@ -88,7 +91,7 @@ SQLite 自动为旧 `uploads` 添加 `protocol=1`，新 v2 任务使用 `direct_
 ### 按文件上传（Cloudflare Tunnel 推荐）
 
 1. `POST /api/v1/uploads/init`：JSON 请求体为下方完整元数据，登记整组文件大小。返回 `202`；只登记，不预占整组磁盘。
-2. `PUT /api/v1/uploads/{upload_id}/files/{index}`：请求体为单张 PNG 原始字节，`index` 从 0 开始，大小须与 `file_sizes` 对应项相同。完整落盘立即进入云盘上传队列。
+2. `PUT /api/v1/uploads/{upload_id}/files/{index}`：请求体为单张 PNG 原始字节，`index` 从 0 开始，大小须与 `file_sizes` 对应项相同。整组密封后进入云盘上传队列。
 3. `POST /api/v1/uploads/{upload_id}/complete`：所有文件接收完成后确认整组，返回 `202` 和组哈希。缺文件返回 `409`，不会提前加入待派发样本。
 
 ```sh

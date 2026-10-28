@@ -80,7 +80,7 @@ func (s *Server) initializeDirect(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err := s.S.claimGroupProtocolContext(r.Context(), m, 2); err != nil {
-		reject(w, 409, err)
+		controlError(w, err)
 		return
 	}
 	defer s.releaseGroup(m.UploadID)
@@ -138,7 +138,7 @@ func (s *Server) initializeDirect(w http.ResponseWriter, r *http.Request) {
 	}
 	tx, err := s.S.DB.BeginTx(r.Context(), nil)
 	if err != nil {
-		reject(w, 500, err)
+		controlError(w, err)
 		return
 	}
 	defer tx.Rollback()
@@ -164,7 +164,7 @@ func (s *Server) initializeDirect(w http.ResponseWriter, r *http.Request) {
 		err = tx.Commit()
 	}
 	if err != nil {
-		reject(w, 500, err)
+		controlError(w, err)
 		return
 	}
 	s.S.manifestCache.put(m.UploadID, digest)
@@ -253,8 +253,17 @@ func (s *Server) confirmDirect(ctx context.Context, f File, id int64) error {
 func (s *Server) directFailure(w http.ResponseWriter, f File, err error) {
 	slog.Warn("direct upload control failed", "upload_id", f.Group, "file", f.ID, "error", err)
 	var limited *cloudThrottleError
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		controlError(w, err)
+		return
+	}
 	if errors.As(err, &limited) {
-		w.Header().Set("Retry-After", strconv.FormatInt(max(1, int64((limited.RetryAfter+time.Second-1)/time.Second)), 10))
+		if limited.RetryAfter > 0 {
+			w.Header().Set("Retry-After", strconv.FormatInt(max(1, int64((limited.RetryAfter+time.Second-1)/time.Second)), 10))
+		}
+		if writer, ok := w.(interface{ setError(string) }); ok {
+			writer.setError(err.Error())
+		}
 		respond(w, http.StatusTooManyRequests, map[string]any{"error": "cloud rate limited; retry later"})
 		return
 	}
@@ -271,14 +280,13 @@ func (s *Server) prepareDirect(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
-	defer cancel()
+	ctx := r.Context()
 	var state, preID string
 	var slice int64
 	var completing int
 	err := s.S.DB.QueryRowContext(ctx, `SELECT f.state,d.preupload_id,d.slice_size,d.completing FROM files f JOIN direct_files d ON d.file_id=f.id WHERE f.id=?`, f.ID).Scan(&state, &preID, &slice, &completing)
 	if err != nil {
-		reject(w, 500, err)
+		controlError(w, err)
 		return
 	}
 	if state == "uploaded" {
@@ -305,7 +313,7 @@ func (s *Server) prepareDirect(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else if !errors.Is(err, sql.ErrNoRows) {
-		reject(w, 500, err)
+		controlError(w, err)
 		return
 	}
 	if completing != 0 {
@@ -332,7 +340,7 @@ func (s *Server) prepareDirect(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if _, err = s.S.DB.ExecContext(ctx, `UPDATE direct_files SET preupload_id=?,slice_size=? WHERE file_id=?`, preID, slice, f.ID); err != nil {
-			reject(w, 500, err)
+			controlError(w, err)
 			return
 		}
 	}
@@ -366,7 +374,7 @@ func (s *Server) completeDirectFile(w http.ResponseWriter, r *http.Request) {
 	var poll int
 	err := s.S.DB.QueryRowContext(r.Context(), `SELECT f.state,d.preupload_id,d.completing FROM files f JOIN direct_files d ON d.file_id=f.id WHERE f.id=?`, f.ID).Scan(&state, &preID, &poll)
 	if err != nil {
-		reject(w, 500, err)
+		controlError(w, err)
 		return
 	}
 	if state == "uploaded" {
@@ -377,13 +385,12 @@ func (s *Server) completeDirectFile(w http.ResponseWriter, r *http.Request) {
 		reject(w, 409, fmt.Errorf("prepare cloud upload first"))
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
-	defer cancel()
+	ctx := r.Context()
 	// Persist before the cloud call so a lost HTTP reply can be recovered by
 	// polling, without creating another cloud file or trusting client file IDs.
 	if poll == 0 {
 		if _, err = s.S.DB.ExecContext(ctx, `UPDATE direct_files SET completing=1 WHERE file_id=? AND completing=0`, f.ID); err != nil {
-			reject(w, 500, err)
+			controlError(w, err)
 			return
 		}
 	}
@@ -412,7 +419,7 @@ func (s *Server) completeDirect(w http.ResponseWriter, r *http.Request) {
 	defer release()
 	var pending, files int
 	if err := s.S.DB.QueryRowContext(r.Context(), `SELECT count(*),count(*) FILTER(WHERE state<>'uploaded' OR remote_id<=0) FROM files WHERE group_id=?`, m.UploadID).Scan(&files, &pending); err != nil {
-		reject(w, 500, err)
+		controlError(w, err)
 		return
 	}
 	if files != len(m.Sizes) || pending != 0 {
@@ -421,7 +428,7 @@ func (s *Server) completeDirect(w http.ResponseWriter, r *http.Request) {
 	}
 	hash, duplicate, err := s.S.seal(m.UploadID)
 	if err != nil {
-		reject(w, 500, err)
+		controlError(w, err)
 		return
 	}
 	logGroupReceived(m, hash, duplicate)

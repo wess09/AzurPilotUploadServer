@@ -49,7 +49,7 @@ func TestAdaptiveUploadsBoundConcurrencyAndRespectCooldown(t *testing.T) {
 	}
 }
 
-func TestCloud429IsTypedAndSuppressesRequestsDuringBackoff(t *testing.T) {
+func TestCloud429IsTypedWithoutApplicationBackoff(t *testing.T) {
 	calls := 0
 	endpoint := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
@@ -68,7 +68,7 @@ func TestCloud429IsTypedAndSuppressesRequestsDuringBackoff(t *testing.T) {
 			t.Fatal("429 Retry-After was not preserved", err)
 		}
 	}
-	if calls != 1 {
-		t.Fatal("request reached cloud during cooldown", calls)
+	if calls != 2 {
+		t.Fatal("request was suppressed by application backoff", calls)
 	}
 }

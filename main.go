@@ -183,7 +183,7 @@ func run() error {
 	// the 2c2g node instead of opening a fresh connection for every request.
 	cloudTransport.MaxIdleConns = 256
 	cloudTransport.MaxIdleConnsPerHost = 64
-	cloudTransport.MaxConnsPerHost = 128
+	cloudTransport.MaxConnsPerHost = 0
 	// Bound the cloud's response wait separately from sending the image. A
 	// completed request body must not occupy either upload worker for minutes.
 	// The overall deadline still allows large files to cross a slow uplink.

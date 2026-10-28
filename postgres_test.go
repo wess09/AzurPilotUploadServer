@@ -62,7 +62,7 @@ func TestPostgresMigrationAndRedisHotTTL(t *testing.T) {
 	}
 	defer st.DB.Close()
 	defer st.contentCache.client.Close()
-	if !st.DB.postgres || st.DB.Stats().MaxOpenConnections != 8 {
+	if !st.DB.postgres || st.DB.Stats().MaxOpenConnections != 0 {
 		t.Fatal("PostgreSQL pool not enabled")
 	}
 	var count, busy int

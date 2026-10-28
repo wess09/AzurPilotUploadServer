@@ -29,4 +29,4 @@ Use focused `feat:`, `fix:`, or `docs:` commits with concise descriptions. Inclu
 
 Keep `.env`, credentials, images, and SQLite files out of Git. Never release spool space before successful unlink. Retain durable cloud IDs and batch IDs until acknowledgement; never delete cloud originals automatically.
 
-Production uses PostgreSQL with an eight-connection pool and volatile Redis hashes (300-second TTL). SQLite remains for offline migration and isolated unit tests. Preserve the original SQLite snapshot and spool during migration; never clear live queues. Redis misses use cloud MD5 reuse without scanning cold history. Keep caches bounded and use TCP peer IPs unless a trusted proxy is explicitly configured.
+Production uses PostgreSQL without an application connection cap and volatile Redis hashes (300-second TTL). SQLite remains for offline migration and isolated unit tests. Preserve the original SQLite snapshot and spool during migration; never clear live queues. Redis misses use cloud MD5 reuse without scanning cold history. Keep caches bounded and use TCP peer IPs unless a trusted proxy is explicitly configured.

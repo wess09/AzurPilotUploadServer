@@ -72,7 +72,7 @@ func (p *PanClient) directAPI(ctx context.Context, path string, body any, result
 		return err
 	}
 	if out.Code == 429 {
-		return p.limitEndpoint(path, 0)
+		return &cloudThrottleError{Endpoint: path}
 	}
 	if out.Code == 401 {
 		p.mu.Lock()
@@ -82,7 +82,6 @@ func (p *PanClient) directAPI(ctx context.Context, path string, body any, result
 	if out.Code != 0 {
 		return fmt.Errorf("123 direct API %d: %s", out.Code, out.Message)
 	}
-	p.endpointSuccess(path)
 	return json.Unmarshal(out.Data, result)
 }
 

@@ -67,6 +67,9 @@ func respond(w http.ResponseWriter, status int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 func reject(w http.ResponseWriter, status int, err error) {
+	if writer, ok := w.(interface{ setError(string) }); ok {
+		writer.setError(err.Error())
+	}
 	if status == 429 || status == 503 {
 		w.Header().Set("Retry-After", "5")
 	}
@@ -84,10 +87,10 @@ func (s *Server) Handler() http.Handler {
 	m.HandleFunc("POST /api/v1/uploads/init", s.initialize)
 	m.HandleFunc("PUT /api/v1/uploads/{id}/files/{index}", s.receiveFile)
 	m.HandleFunc("POST /api/v1/uploads/{id}/complete", s.complete)
-	m.HandleFunc("POST /api/v2/uploads/init", directDeadline(s.initializeDirect))
-	m.HandleFunc("POST /api/v2/uploads/{id}/files/{index}/prepare", directDeadline(s.prepareDirect))
-	m.HandleFunc("POST /api/v2/uploads/{id}/files/{index}/complete", directDeadline(s.completeDirectFile))
-	m.HandleFunc("POST /api/v2/uploads/{id}/complete", directDeadline(s.completeDirect))
+	m.HandleFunc("POST /api/v2/uploads/init", s.initializeDirect)
+	m.HandleFunc("POST /api/v2/uploads/{id}/files/{index}/prepare", s.prepareDirect)
+	m.HandleFunc("POST /api/v2/uploads/{id}/files/{index}/complete", s.completeDirectFile)
+	m.HandleFunc("POST /api/v2/uploads/{id}/complete", s.completeDirect)
 	m.HandleFunc("GET /internal/v1/worker/connect", s.acceptWorker)
 	m.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		u, v := s.S.Quota.snapshot()

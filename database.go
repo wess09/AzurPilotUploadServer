@@ -108,8 +108,8 @@ func openDatabase(c Config) (*database, error) {
 	}
 	d := &database{raw, pg}
 	if pg {
-		d.SetMaxOpenConns(8)
-		d.SetMaxIdleConns(4)
+		d.SetMaxOpenConns(0)
+		d.SetMaxIdleConns(8)
 		d.SetConnMaxIdleTime(time.Minute)
 	} else {
 		d.SetMaxOpenConns(1)

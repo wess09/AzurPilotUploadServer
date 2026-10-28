@@ -91,8 +91,8 @@ func openStore(c Config) (*Store, error) {
 		interval = 30 * time.Minute
 	}
 	s := &Store{DB: db, Dir: dir, Interval: interval, Now: time.Now, Quota: &Quota{Limit: c.SpoolBytes, MinFree: c.MinFreeBytes, Free: func() (int64, error) { return diskFree(dir) }}}
-	s.metadataCache = newLRU[string, groupMetadata](1024)
-	s.manifestCache = newLRU[string, [32]byte](4096)
+	s.metadataCache = newLRU[string, groupMetadata](8192)
+	s.manifestCache = newLRU[string, [32]byte](16384)
 	s.contentCache, err = newHotCache(c.RedisURL)
 	if err != nil {
 		db.Close()

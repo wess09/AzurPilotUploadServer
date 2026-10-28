@@ -172,7 +172,12 @@ func run() error {
 	defer st.DB.Close()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	s := newServer(c, st, &PanClient{Client: &http.Client{Timeout: 5 * time.Minute}, Base: c.PanBase, ClientID: c.PanID, Secret: c.PanSecret, ParentID: c.PanParentID})
+	cloudTransport := http.DefaultTransport.(*http.Transport).Clone()
+	// Bound the cloud's response wait separately from sending the image. A
+	// completed request body must not occupy either upload worker for minutes.
+	// The overall deadline still allows large files to cross a slow uplink.
+	cloudTransport.ResponseHeaderTimeout = 20 * time.Second
+	s := newServer(c, st, &PanClient{Client: &http.Client{Timeout: 5 * time.Minute, Transport: cloudTransport}, Base: c.PanBase, ClientID: c.PanID, Secret: c.PanSecret, ParentID: c.PanParentID})
 	s.workerContext = ctx
 	slog.Info("uploader starting", "listen", c.Addr, "receive_concurrency", c.ReceiveConcurrency,
 		"upload_concurrency", c.UploadConcurrency, "file_limit", c.FileBytes, "group_limit", c.GroupBytes,

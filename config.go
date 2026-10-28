@@ -8,6 +8,7 @@ import (
 )
 
 type Config struct {
+	ControlRelayURL, ControlRelayToken                                                       string
 	DatabaseURL, RedisURL                                                                    string
 	Addr, DataDir, WorkerURL, WorkerToken, PanID, PanSecret, PanBase, AccessID, AccessSecret string
 	ReceiveConcurrency, UploadConcurrency, BatchSize                                         int
@@ -24,6 +25,7 @@ type Config struct {
 func loadConfig() (Config, error) {
 	c := Config{Addr: env("LISTEN_ADDR", ":8090"), DataDir: env("DATA_DIR", "data"), WorkerURL: os.Getenv("WORKER_WS_URL"), WorkerToken: os.Getenv("WORKER_TOKEN"), PanID: os.Getenv("PAN_CLIENT_ID"), PanSecret: os.Getenv("PAN_CLIENT_SECRET"), PanBase: env("PAN_API_BASE", "https://open-api.123pan.com"), AccessID: os.Getenv("CF_ACCESS_CLIENT_ID"), AccessSecret: os.Getenv("CF_ACCESS_CLIENT_SECRET"), Poll: time.Second}
 	c.WorkerMode = env("WORKER_MODE", "reverse")
+	c.ControlRelayURL, c.ControlRelayToken = os.Getenv("PAN_CONTROL_RELAY_URL"), os.Getenv("PAN_CONTROL_RELAY_TOKEN")
 	c.DatabaseURL, c.RedisURL = os.Getenv("DATABASE_URL"), os.Getenv("REDIS_URL")
 	c.StatisticsURL = os.Getenv("STATISTICS_PUBLIC_URL")
 	var err error

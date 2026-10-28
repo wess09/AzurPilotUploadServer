@@ -1,0 +1,10 @@
+FROM --platform=$BUILDPLATFORM golang:1.26 AS build
+ARG TARGETOS
+ARG TARGETARCH
+WORKDIR /src
+COPY go.mod go.sum ./
+COPY cmd/panrelay/ ./cmd/panrelay/
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -ldflags="-s -w" -o /pan-relay ./cmd/panrelay
+FROM gcr.io/distroless/static-debian12:nonroot
+COPY --from=build /pan-relay /pan-relay
+ENTRYPOINT ["/pan-relay"]

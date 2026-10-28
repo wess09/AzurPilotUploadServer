@@ -188,7 +188,7 @@ func run() error {
 	// completed request body must not occupy either upload worker for minutes.
 	// The overall deadline still allows large files to cross a slow uplink.
 	cloudTransport.ResponseHeaderTimeout = 20 * time.Second
-	s := newServer(c, st, &PanClient{Client: &http.Client{Timeout: 5 * time.Minute, Transport: cloudTransport}, Base: c.PanBase, ClientID: c.PanID, Secret: c.PanSecret, ParentID: c.PanParentID})
+	s := newServer(c, st, &PanClient{Client: &http.Client{Timeout: 5 * time.Minute, Transport: cloudTransport}, Base: c.PanBase, ClientID: c.PanID, Secret: c.PanSecret, ParentID: c.PanParentID, RelayURL: c.ControlRelayURL, RelayToken: c.ControlRelayToken})
 	s.workerContext = ctx
 	slog.Info("uploader starting", "listen", c.Addr, "receive_concurrency", c.ReceiveConcurrency,
 		"upload_concurrency_min", c.UploadConcurrency, "upload_concurrency_max", c.UploadMaxConcurrency, "file_limit", c.FileBytes, "group_limit", c.GroupBytes,

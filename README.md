@@ -154,3 +154,9 @@ go vet ./...
 `/healthz` 和监控响应包含 `storage`，显示实际数据库、Redis、300 秒 TTL 和数据库连接池状态。访问日志 `http request` 包含 `request_ip / method / path / status / duration_ms / user_agent`；来源使用 TCP RemoteAddr，忽略未经认证的转发头。不会记录鉴权头、请求体或云盘签名 URL。
 
 直传禁用应用层节流、预约等待、主动冷却和出站连接上限，真实云盘 429 直接返回。数据库连接池不设置应用层最大并发；仍受现有 PG 服务容量约束。请求取消记录为 499，超时为 504，真实元数据冲突才返回 409；日志 reason 字段给出原因。
+
+## 美国控制请求转发节点
+
+`cmd/panrelay` 将许可列表内的 123 API 请求通过 IPv4 转发，不转发图片。节点只监听 loopback，通过美国机主动建立的 SSH 反向转发连接 A。A 的私有网桥代理要求 `X-AzurPilot-Relay-Token`，节点不公开匿名代理。`PAN_CONTROL_RELAY_URL / PAN_CONTROL_RELAY_TOKEN` 配置后，一半控制调用使用该出口，连接失败或出口 5xx 自动回到原出口；不对数据上传设置新的并发或 QPS 限制。API 没有 AAAA 时，IPv6 地址段不能充当多个实际 IPv6 出口。
+
+`Dockerfile.relay` 由 CI 独立发布 `relay-<commit>` 镜像；宿主机也可直接运行静态二进制，无需在 2c2g 的 A 上增加 Docker 代理容器。

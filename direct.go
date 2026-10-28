@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"regexp"
 	"strconv"
-	"strings"
 	"time"
 )
 
@@ -46,10 +45,8 @@ func directReply(w http.ResponseWriter, status int, id string, fields map[string
 }
 
 func (s *Server) initializeDirect(w http.ResponseWriter, r *http.Request) {
-	if !s.acquireReceiver(w) {
-		return
-	}
-	defer func() { <-s.receivers }()
+	s.controlActive.Add(1)
+	defer s.controlActive.Add(-1)
 	r.Body = http.MaxBytesReader(w, r.Body, 256<<10)
 	d := json.NewDecoder(r.Body)
 	d.DisallowUnknownFields()
@@ -130,15 +127,15 @@ func (s *Server) directGroup(w http.ResponseWriter, r *http.Request) (Metadata, 
 		reject(w, 503, fmt.Errorf("direct uploads unavailable"))
 		return Metadata{}, nil, false
 	}
-	if !s.acquireReceiver(w) {
-		return Metadata{}, nil, false
-	}
+	// v2 carries only metadata. It must not compete with v1 image streams for
+	// receive slots; per-group exclusion and cloud request deadlines still apply.
+	s.controlActive.Add(1)
 	m, ok := s.acquireGroupProtocol(w, r.PathValue("id"), 2)
 	if !ok {
-		<-s.receivers
+		s.controlActive.Add(-1)
 		return m, nil, false
 	}
-	return m, func() { s.releaseGroup(m.UploadID); <-s.receivers }, true
+	return m, func() { s.releaseGroup(m.UploadID); s.controlActive.Add(-1) }, true
 }
 
 func (s *Server) directFile(w http.ResponseWriter, r *http.Request, m Metadata) (File, bool) {
@@ -156,12 +153,11 @@ func (s *Server) directFile(w http.ResponseWriter, r *http.Request, m Metadata) 
 }
 
 func (s *Server) confirmDirect(ctx context.Context, f File, id int64) error {
-	info, err := s.Direct.DirectInfo(ctx, id)
-	if err != nil {
-		return err
-	}
-	if id <= 0 || info.FileID != id || info.ParentID != s.C.PanParentID || info.Name != f.SHA256+".png" || info.Type != 0 || info.Trashed != 0 || info.Status > 100 || info.Size != f.Size || !strings.EqualFold(info.MD5, f.MD5) {
-		return fmt.Errorf("cloud MD5, size or destination mismatch")
+	// Only IDs returned by the cloud completion API or an existing server-side
+	// record reach here. B verifies the actual downloaded bytes against the
+	// original SHA-256 and size before recognizing or submitting anything to C.
+	if id <= 0 {
+		return fmt.Errorf("invalid cloud file ID")
 	}
 	result, err := s.S.DB.ExecContext(ctx, `UPDATE files SET state='uploaded',remote_id=?,error='' WHERE id=? AND state<>'uploaded'`, id, f.ID)
 	if err != nil {
@@ -169,14 +165,14 @@ func (s *Server) confirmDirect(ctx context.Context, f File, id int64) error {
 	}
 	if n, _ := result.RowsAffected(); n == 1 {
 		s.transfers.recordDirect(f.Size)
-		slog.Info("direct upload verified", "upload_id", f.Group, "file", f.ID, "index", f.Index, "bytes", f.Size)
+		slog.Info("direct upload cloud completed", "upload_id", f.Group, "file", f.ID, "index", f.Index, "bytes", f.Size)
 	}
 	return nil
 }
 
 func (s *Server) directFailure(w http.ResponseWriter, f File, err error) {
 	slog.Warn("direct upload control failed", "upload_id", f.Group, "file", f.ID, "error", err)
-	reject(w, 503, fmt.Errorf("cloud upload not verified; retry"))
+	reject(w, 503, fmt.Errorf("cloud upload not completed; retry"))
 }
 
 func (s *Server) prepareDirect(w http.ResponseWriter, r *http.Request) {
@@ -203,7 +199,8 @@ func (s *Server) prepareDirect(w http.ResponseWriter, r *http.Request) {
 		directReply(w, 200, m.UploadID, map[string]any{"completed": true})
 		return
 	}
-	// Reuse only previously completed content, and recheck it with the cloud.
+	// Reuse only cloud-confirmed IDs for the same expected content. B still
+	// verifies downloaded bytes; no account-level detail call is needed on A.
 	var cached int64
 	err = s.S.DB.QueryRowContext(ctx, `SELECT remote_id FROM files WHERE sha=? AND md5=? AND size=? AND state='uploaded' AND remote_id>0 ORDER BY rowid LIMIT 1`, f.SHA256, f.MD5, f.Size).Scan(&cached)
 	if err == nil {

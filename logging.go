@@ -37,6 +37,7 @@ func (s *Server) logStatus(ctx context.Context) {
 		"uploading_files", uploading, "unacked_batches", batches,
 		"spool_used", used, "spool_reserved", reserved, "spool_limit", s.C.SpoolBytes,
 		"worker_connected", len(s.workerSlot) > 0,
+		"direct_control_active", s.controlActive.Load(),
 		"next_dispatch_at", time.Unix(next, 0).UTC().Format(time.RFC3339))
 }
 
@@ -71,7 +72,7 @@ func (s *Server) logTransfers() {
 		"upload_images_total", r.Upload.Total.Images)
 	d := r.DirectUpload
 	slog.Info("direct upload rates", "window_seconds", r.WindowSeconds,
-		"verified_images_per_second", d.ImagesPerSecond,
-		"verified_images_per_second_60s", d.ImagesPerSecond60s,
-		"verified_images_total", d.Total.Images)
+		"cloud_completed_images_per_second", d.ImagesPerSecond,
+		"cloud_completed_images_per_second_60s", d.ImagesPerSecond60s,
+		"cloud_completed_images_total", d.Total.Images)
 }

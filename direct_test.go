@@ -183,34 +183,32 @@ func TestV2DirectResumeVerifyAndBatchWithoutSpooling(t *testing.T) {
 	}
 }
 
-func TestV2RequiresCloudMD5SizeAndOwnedDestination(t *testing.T) {
-	for _, tc := range []struct {
-		name   string
-		modify func(*CloudFileInfo)
-	}{
-		{"md5", func(i *CloudFileInfo) { i.MD5 = strings.Repeat("0", 32) }},
-		{"size", func(i *CloudFileInfo) { i.Size++ }},
-		{"directory", func(i *CloudFileInfo) { i.ParentID++ }},
-		{"filename", func(i *CloudFileInfo) { i.Name = "someone-else.png" }},
-		{"trashed", func(i *CloudFileInfo) { i.Trashed = 1 }},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			c := testConfig(t)
-			pan := &directTestPan{modify: tc.modify}
-			s := newServer(c, opened(t, c), pan)
-			m := directTestManifest(9203, pngData("verify"))
-			directInit(t, s, m, 202)
-			directControl(t, s, m, "/files/0/prepare", 200)
-			directControl(t, s, m, "/files/0/complete", 503)
-			directControl(t, s, m, "/complete", 409)
-			var n int
-			if err := s.S.DB.QueryRow(`SELECT count(*) FROM uploads WHERE hash IS NOT NULL`).Scan(&n); err != nil || n != 0 {
-				t.Fatal("failed verification poisoned the dedup index", n, err)
-			}
-			pan.modify = nil
-			directControl(t, s, m, "/files/0/complete", 200)
-			directControl(t, s, m, "/complete", 202)
-		})
+func TestV2CompletionDefersActualByteVerificationToB(t *testing.T) {
+	c := testConfig(t)
+	pan := &directTestPan{modify: func(*CloudFileInfo) { t.Fatal("A must not fetch cloud file details") }}
+	s := newServer(c, opened(t, c), pan)
+	m := directTestManifest(9203, pngData("verify-in-B"))
+	// v1 image streams cannot block metadata-only v2 control requests.
+	for range cap(s.receivers) {
+		s.receivers <- struct{}{}
+	}
+	directInit(t, s, m, 202)
+	directControl(t, s, m, "/files/0/prepare", 200)
+	directControl(t, s, m, "/files/0/complete", 200)
+	directControl(t, s, m, "/complete", 202)
+	if s.controlActive.Load() != 0 || len(s.receivers) != cap(s.receivers) {
+		t.Fatal("v2 leaked activity or consumed a v1 slot")
+	}
+	if _, err := s.S.DB.Exec(`UPDATE dispatch_state SET next_at=0`); err != nil {
+		t.Fatal(err)
+	}
+	batch, err := s.S.makeBatch(30)
+	if err != nil || batch == nil || len(batch.Items) != 1 {
+		t.Fatal("cloud completion did not reach B", batch, err)
+	}
+	f := batch.Items[0].Files[0]
+	if f.SHA256 != m.Files[0].SHA256 || f.Size != m.Metadata.Sizes[0] || f.RemoteID <= 0 {
+		t.Fatal("B lost the original byte verification contract", f)
 	}
 }
 

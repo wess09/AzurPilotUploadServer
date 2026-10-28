@@ -37,17 +37,26 @@ Linux 服务器也可在镜像已拉取或导入后执行 `sh deploy/start.sh`�
 
 按 `upload_id`、`file` 或 `batch_id` 关联记录。日志不输出密钥、提交人、原图内容或每个传输缓冲；健康探测不逐次记录。默认镜像的日志时间及 `next_dispatch_at` 使用 UTC，北京时间需加 8 小时。Compose 对日志轮转，最多保留 3 × 10 MiB。
 
+### 可视化监控大屏
+
+打开 A 的 `/dashboard/`（根路径也会跳转），可查看新增接收、重复传输、A 转存和 v2 直传完成的实时卡片，以及图片/秒、MiB/秒两组折线图。支持 15 分钟 / 1 小时时间范围、图例筛选、悬停数值、暂停刷新、全屏和手机访问。页面内嵌于 Go 镜像，不依赖外部 CDN 或前端服务。
+
+暂存面板分别显示已落盘与预留空间；队列显示待转存、转存中、直传待确认、重试文件及待回执批次。v1 接收数和 v2 控制请求数独立显示，界面不暴露提交人、原图、文件 ID 或凭据。
+
+`GET /api/v1/monitor` 提供只读数据，每 5 秒刷新；`?after=<Unix秒>` 增量获取历史。趋势使用固定 720 个 5 秒时间桶，保留本次进程最近 1 小时，重启清零。所有访问者共用 15 秒队列摘要缓存，监控不占上传名额，也不保存原图或逐次写入 SQLite。
+
 ### 图片上传 / 下载速率
 
 `GET /healthz` 的 `transfers` 返回最近 10 秒、60 秒的成功图片吞吐及本次进程启动以来的累计数：
 
 - `download`：客户端 → A，完整接收并登记的单张图片；已存在文件的重传通过哈希核验后也计一次实际接收。
 - `upload`：A → 123 盘，云盘确认完成且状态保存成功的单张图片；失败重试不增加成功数。
+- `received` / `retransmit`：分别为完整新文件接收与已登记文件重传；两者相加为原有 `download`，用于区分新增量和重传带宽。
 - `images_per_second` / `images_per_second_60s`：10 秒 / 60 秒平均张数每秒。
 - `bytes_per_second` / `bytes_per_second_60s`：对应成功图片大小每秒，不含协议开销或失败传输的带宽。
 - `total.images / total.bytes`：从 `since` 开始累计，重启清零；空闲超过窗口后速率自动回零。
 
-按文件计数，多图上报不合并为一张；重复接收的网络吞吐与组哈希去重后的正式统计数量是不同指标。B 从云盘下载原图不经过 A，不包含在 A 的下载计数中。使用固定 60 个时间桶，图片仍按 64 KiB 流式落盘，不增加原图缓存或数据库写入。
+按文件计数，多图上报不合并为一张；重复接收的网络吞吐与组哈希去重后的正式统计数量是不同指标。B 从云盘下载原图不经过 A，不包含在 A 的下载计数中。速率使用固定 60 个秒级桶，图表另用固定 720 个 5 秒桶；图片仍按 64 KiB 流式落盘，不增加原图缓存或数据库写入。
 
 每 10 秒自动输出 `transfer rates` 日志，包含两个方向的张/秒、60 秒均速、MiB/秒和累计图片数。例：
 
@@ -63,14 +72,14 @@ INFO transfer rates window_seconds=10 download_images_per_second=3.2 upload_imag
 
 1. `POST /api/v2/uploads/init`：请求 `{"schema_version":2,"metadata":{...},"files":[{"md5":"32位小写哈希","sha256":"64位小写哈希"}]}`。`metadata` 使用下方现有元数据格式，`files` 按 `file_sizes` 的顺序排列。单文件 10 MiB、整组 500 MiB 的校验仍然有效；JSON 上限 256 KiB。
 2. `POST /api/v2/uploads/{id}/files/{index}/prepare`，空请求体：已验证文件返回 `completed:true`；否则返回 `parts`，每项包含 `number / offset / size / url`。客户端严格按该范围流式 PUT 到 `url`，不携带 A 或网盘账户的认证头，不跟随上传重定向。地址过期后重新 prepare；预上传任务持久化，可跨 A 重启恢复。
-3. `POST /api/v2/uploads/{id}/files/{index}/complete`，空请求体：A 自行向 123 盘请求完成/轮询，取得云端文件 ID；再查询文件详情，核验 **MD5、大小、目录、文件名及有效状态**。不接受客户端传入文件 ID。`completed:false` 时至少间隔一秒重试，`completed:true` 才算通过。
-4. 全部文件通过后 `POST /api/v2/uploads/{id}/complete`，返回组哈希与 `duplicate`，按原来的半小时边界派发 B。未完成的文件不能被 v1 的完成接口绕过校验，同一上传 ID 也不能混用协议。
+3. `POST /api/v2/uploads/{id}/files/{index}/complete`，空请求体：A 自行向 123 盘请求完成/轮询，取得云端文件 ID，登记云盘上传完成。A 不再额外请求文件详情校验，也不接受客户端传入文件 ID。`completed:false` 时至少间隔一秒重试。
+4. 全部文件云端完成后 `POST /api/v2/uploads/{id}/complete`，返回组哈希与 `duplicate`，按原来的半小时边界派发 B。B 下载时逐块计算 **SHA-256 并核对客户端声明的文件大小**，只有完全一致才识别并将结果提交 C。不一致时清理临时文件、记录错误重试，不计入统计。采集时间不变。
 
-本系统的 v2 路由使用 123 盘官方 **V1 预签名上传 API**；这两个版本号互不关联。Client Secret、访问令牌和云端预上传 ID 留在 A，只把限定分片的预签名 URL 发给客户端。SHA-256 仍用于既有组标识、不可变文件名和 B 的下载复核；A 的云端验收使用 MD5。B/C 结果协议、原始采集时间及去重后的统计口径保持兼容。
+本系统的 v2 路由使用 123 盘官方 **V1 预签名上传 API**；这两个版本号互不关联。Client Secret、访问令牌和云端预上传 ID 留在 A，只把限定分片的预签名 URL 发给客户端。MD5 用于云盘创建上传，SHA-256 用于组标识、不可变文件名和 B 的实际字节校验。v2 元数据请求不占 v1 的 30 路接收名额，也不另设应用并发上限；仍有单任务互斥、请求大小限制和云端请求超时。
 
 SQLite 自动为旧 `uploads` 添加 `protocol=1`，新 v2 任务使用 `direct_files` 保存上传进度；无需清空数据库。新 AP 的磁盘队列记录 `upload_version=2`，旧队列缺少该字段时继续使用 v1，不把已有任务切换到另一协议。
 
-`/healthz` 的 `transfers.direct_upload` 与 `direct upload rates` 日志显示已验证的直传张/秒及累计数，包含云盘内容复用。它与原来的 `download / upload` 分开，后两者仅表示图片经过 A 的接收和上传。
+`/healthz` 的 `transfers.direct_upload` 与 `direct upload rates` 日志显示**云盘已确认完成**的张/秒及累计数，包含云盘内容复用；`direct_upload_stage=cloud_completed` 明确该阶段。这不是 B 校验或正式统计的完成数。`direct_control_active` 显示正在处理的 v2 请求数，原有 `download / upload` 仍表示图片经过 A 的传输。
 
 ### 按文件上传（Cloudflare Tunnel 推荐）
 

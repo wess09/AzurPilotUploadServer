@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"os"
 	"regexp"
+	"sync/atomic"
 	"time"
 )
 
@@ -46,6 +47,8 @@ type Server struct {
 	workerSlot    chan struct{}
 	workerContext context.Context
 	transfers     *transferMetrics
+	monitor       monitorCache
+	controlActive atomic.Int64
 }
 
 func newServer(c Config, s *Store, pan Uploader) *Server {
@@ -66,6 +69,7 @@ func reject(w http.ResponseWriter, status int, err error) {
 }
 func (s *Server) Handler() http.Handler {
 	m := http.NewServeMux()
+	s.monitorRoutes(m)
 	m.HandleFunc("POST /api/v1/uploads", s.receive)
 	m.HandleFunc("/api/upload", legacyPublic(s.receiveLegacy))
 	m.HandleFunc("/api/upload/{$}", legacyPublic(s.receiveLegacy))
@@ -83,7 +87,7 @@ func (s *Server) Handler() http.Handler {
 	m.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		u, v := s.S.Quota.snapshot()
 		w.Header().Set("Cache-Control", "no-store")
-		respond(w, 200, map[string]any{"status": "ok", "upload_protocols": []int{1, 2}, "spool_used": u, "spool_reserved": v, "spool_limit": s.C.SpoolBytes, "worker_connected": len(s.workerSlot) > 0, "worker_mode": s.C.WorkerMode, "batch_interval_seconds": int64(s.S.Interval / time.Second), "transfers": s.transfers.snapshot()})
+		respond(w, 200, map[string]any{"status": "ok", "upload_protocols": []int{1, 2}, "spool_used": u, "spool_reserved": v, "spool_limit": s.C.SpoolBytes, "worker_connected": len(s.workerSlot) > 0, "worker_mode": s.C.WorkerMode, "batch_interval_seconds": int64(s.S.Interval / time.Second), "direct_control_active": s.controlActive.Load(), "direct_upload_stage": "cloud_completed", "transfers": s.transfers.snapshot()})
 	})
 	return m
 }
@@ -195,7 +199,7 @@ func (s *Server) receive(w http.ResponseWriter, r *http.Request) {
 				reject(w, 409, fmt.Errorf("file %d differs from previous attempt", i))
 				return
 			}
-			s.transfers.record(false, n)
+			s.transfers.recordReuse(n)
 			continue
 		}
 		if err = s.savePart(r.Context(), m.UploadID, i, n, p); err != nil {

@@ -1,0 +1,49 @@
+<!doctype html>
+<!--
+Content hierarchy: live throughput and charts first; storage and queue second;
+metric definitions and process lifetime third. Fullscreen is the primary action.
+Tokens: navy surfaces, three text levels, blue/amber/violet/teal data series;
+spacing 4/8/12/16/24/32, type 12/14/16/20/32/40, 16px panel radius.
+Dark surface elevation and visible focus follow refactoring-ui's extension notes.
+-->
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>AzurPilot · 上传监控</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/dashboard/styles.css">
+  <script src="/dashboard/app.js" defer></script>
+</head>
+<body>
+  <main class="screen">
+    <header class="topbar">
+      <div class="brand"><span class="brand-mark" aria-hidden="true">AP<span></span></span><div><div class="eyebrow">AZURPILOT OBSERVATORY</div><h1>上传运行态势<span class="node-label">NODE A</span></h1></div></div>
+      <div class="header-actions"><span class="live-state" id="connection" role="status"><i></i><span>正在连接</span></span><time id="clock">--:--:--</time><button class="primary" id="fullscreen" type="button"><span aria-hidden="true">⛶</span> 全屏大屏</button></div>
+    </header>
+
+    <div class="subbar"><p>图片流转，一目了然。<span>每 5 秒自动更新</span></p><div class="pipeline"><span>客户端</span><b>→</b><span>A 接收 / v2 直传</span><b>→</b><span>123 盘</span><b>→</b><span class="worker-badge" id="worker-badge">B 连接中</span></div></div>
+    <div class="notice" id="notice" role="status" hidden></div>
+
+    <section class="metrics" aria-label="实时传输速率">
+      <article class="metric blue"><div class="metric-heading"><span class="dot"></span><h2>新增接收</h2><span class="tag">v1</span><span class="spark-icon" aria-hidden="true">↘</span></div><div class="metric-value"><strong id="received-rate">—</strong><span>张 / 秒</span></div><div class="metric-detail"><span id="received-bytes">— MiB/s</span><span>累计 <b id="received-total">—</b> 张</span></div><p>客户端 → A · 完整接收的新文件</p></article>
+      <article class="metric amber"><div class="metric-heading"><span class="dot"></span><h2>重复传输</h2><span class="tag">v1</span><span class="spark-icon" aria-hidden="true">↻</span></div><div class="metric-value"><strong id="retransmit-rate">—</strong><span>张 / 秒</span></div><div class="metric-detail"><span id="retransmit-bytes">— MiB/s</span><span>累计 <b id="retransmit-total">—</b> 张</span></div><p>已接收文件再次传入并通过哈希核验</p></article>
+      <article class="metric violet"><div class="metric-heading"><span class="dot"></span><h2>转存 123 盘</h2><span class="tag">v1</span><span class="spark-icon" aria-hidden="true">↗</span></div><div class="metric-value"><strong id="upload-rate">—</strong><span>张 / 秒</span></div><div class="metric-detail"><span id="upload-bytes">— MiB/s</span><span>累计 <b id="upload-total">—</b> 张</span></div><p>A → 123 盘 · 云端已确认完成</p></article>
+      <article class="metric teal"><div class="metric-heading"><span class="dot"></span><h2>直传已完成</h2><span class="tag">v2</span><span class="spark-icon" aria-hidden="true">✓</span></div><div class="metric-value"><strong id="direct_upload-rate">—</strong><span>张 / 秒</span></div><div class="metric-detail"><span id="direct_upload-bytes">— MiB/s</span><span>累计 <b id="direct_upload-total">—</b> 张</span></div><p>123 盘已接收 · 原图由 B 下载后校验</p></article>
+    </section>
+
+    <section class="charts" aria-label="历史趋势">
+      <article class="panel chart-panel"><div class="panel-heading"><div><div class="eyebrow">IMAGE THROUGHPUT</div><h2>图片吞吐趋势 <span>张 / 秒</span></h2></div><div class="range-switch" aria-label="图表时间范围"><button type="button" data-range="900" aria-pressed="true">15 分钟</button><button type="button" data-range="3600" aria-pressed="false">1 小时</button></div></div><div class="legend" id="legend"></div><div class="plot"><canvas id="images-chart" role="img" aria-label="新增接收、重复传输、转存和直传校验的图片速率折线图"></canvas><div class="plot-tooltip" id="images-tooltip" hidden></div><div class="empty-chart" id="images-empty">正在取得实时数据…</div></div><p class="chart-note" id="chart-summary">保留本次服务启动后最近 1 小时的趋势</p></article>
+      <article class="panel chart-panel"><div class="panel-heading"><div><div class="eyebrow">TRANSFER VOLUME</div><h2>图片数据速率 <span>MiB / 秒</span></h2></div><button class="quiet" id="pause" type="button" aria-pressed="false">暂停刷新</button></div><div class="chart-caption">与左图使用相同时间范围；点击图例可切换曲线</div><div class="plot"><canvas id="bytes-chart" role="img" aria-label="各类成功图片大小每秒的折线图；直传为云盘已接收文件大小，非 A 出站带宽"></canvas><div class="plot-tooltip" id="bytes-tooltip" hidden></div><div class="empty-chart" id="bytes-empty">正在取得实时数据…</div></div><p class="chart-note">不含失败传输与协议开销。直传值为云盘确认量；B 校验后才入统计。</p></article>
+    </section>
+
+    <section class="details" aria-label="存储与处理状态">
+      <article class="panel storage-panel"><div class="panel-heading"><div><div class="eyebrow">LOCAL SPOOL</div><h2>本地暂存</h2></div><span class="pill" id="storage-state">读取中</span></div><div class="storage-main"><strong id="spool-percent">—<small>%</small></strong><div><b id="spool-used">— / —</b><span>已用 + 预留 / 暂存配额</span></div></div><div class="storage-track" role="progressbar" aria-label="暂存配额占用" aria-valuemin="0" aria-valuemax="100" id="storage-meter"><span id="storage-used"></span><span id="storage-reserved"></span></div><div class="storage-labels"><span><i class="used-key"></i>已落盘 <b id="disk-used">—</b></span><span><i class="reserved-key"></i>已预留 <b id="disk-reserved">—</b></span><span>余量 <b id="disk-free">—</b></span></div><p class="panel-note">转存完成后立即清理本地原图。直传不占此配额。</p></article>
+      <article class="panel queue-panel"><div class="panel-heading"><div><div class="eyebrow">PROCESSING QUEUE</div><h2>文件处理队列</h2></div><span class="subtle" id="queue-time">每 15 秒更新</span></div><dl class="queue-grid"><div><dt>待转存</dt><dd id="queue-pending">—</dd></div><div><dt>正在转存</dt><dd id="queue-uploading">—</dd></div><div><dt>直传待确认</dt><dd id="queue-direct">—</dd></div><div><dt>失败待重试</dt><dd class="warning-value" id="queue-retry">—</dd></div></dl><p class="panel-note">按文件计数；直传待确认包含尚未上传与等待云端校验的文件。</p></article>
+      <article class="panel worker-panel"><div class="panel-heading"><div><div class="eyebrow">WORKER LINK</div><h2>B 节点与派发</h2></div><span class="pill" id="worker-state">读取中</span></div><dl class="worker-list"><div><dt>v1 接收请求</dt><dd id="receive-active">— / —</dd></div><div><dt>v2 控制请求</dt><dd id="control-active">—</dd></div><div><dt>转存并发 / 待确认批次</dt><dd><span id="upload-active">—</span> / <span id="queue-batches">—</span></dd></div><div><dt>下一次半小时派发</dt><dd id="next-dispatch">—</dd></div></dl></article>
+    </section>
+    <footer><span><i class="footer-dot"></i>AZURPILOT · UPLOAD MONITOR</span><p id="lifetime">等待服务信息</p><a href="/healthz" target="_blank" rel="noopener">原始健康数据 ↗</a></footer>
+  </main>
+</body>
+</html>

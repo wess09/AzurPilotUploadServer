@@ -99,6 +99,9 @@ func migrateSQLite(c Config, path string) error {
 		}
 		slog.Info("state migration copied", "table", table, "rows", copied)
 	}
+	if _, e = tx.Exec(ctx, "ANALYZE uploads,files,direct_files,batches,dispatch_state,dispatch_queue"); e != nil {
+		return e
+	}
 	if e = tx.Commit(ctx); e != nil {
 		return e
 	}

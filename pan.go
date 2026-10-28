@@ -16,6 +16,8 @@ import (
 )
 
 type PanClient struct {
+	lanesMu                sync.Mutex
+	lanes                  map[string]*cloudLane
 	Client                 *http.Client
 	Base, ClientID, Secret string
 	ParentID               int64
@@ -54,7 +56,7 @@ func (p *PanClient) access(ctx context.Context) (string, error) {
 		return "", err
 	}
 	if out.Code == 429 {
-		return "", p.rateLimited(0)
+		return "", p.limitEndpoint("/api/v1/access_token", 0)
 	}
 	if out.Code != 0 || out.Data.Token == "" {
 		return "", fmt.Errorf("123 token: %s", out.Message)
@@ -67,9 +69,15 @@ func (p *PanClient) access(ctx context.Context) (string, error) {
 	return p.token, nil
 }
 func (p *PanClient) do(req *http.Request, out any) error {
-	if p.backoff != nil {
+	bulk := strings.HasSuffix(req.URL.Path, "/single/create")
+	if bulk && p.backoff != nil {
 		if delay := p.backoff(); delay > 0 {
 			return &cloudThrottleError{RetryAfter: delay}
+		}
+	}
+	if !bulk {
+		if e := p.lane(req.URL.Path).wait(req.Context(), req.URL.Path); e != nil {
+			return e
 		}
 	}
 	resp, err := p.Client.Do(req)
@@ -78,7 +86,11 @@ func (p *PanClient) do(req *http.Request, out any) error {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusTooManyRequests {
-		return p.rateLimited(retryAfter(resp.Header.Get("Retry-After"), time.Now()))
+		delay := retryAfter(resp.Header.Get("Retry-After"), time.Now())
+		if bulk {
+			return p.rateLimited(delay)
+		}
+		return p.limitEndpoint(req.URL.Path, delay)
 	}
 	if resp.StatusCode != 200 {
 		if resp.StatusCode == 401 && !strings.HasSuffix(req.URL.Path, "/access_token") {
@@ -128,7 +140,7 @@ func (p *PanClient) uploadDomain(ctx context.Context, token string) (string, err
 		return "", err
 	}
 	if domain.Code == 429 {
-		return "", p.rateLimited(0)
+		return "", p.limitEndpoint("/upload/v2/file/domain", 0)
 	}
 	if domain.Code == 401 {
 		p.mu.Lock()

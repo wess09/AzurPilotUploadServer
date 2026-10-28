@@ -92,7 +92,7 @@ func (s *Server) Handler() http.Handler {
 	m.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		u, v := s.S.Quota.snapshot()
 		w.Header().Set("Cache-Control", "no-store")
-		respond(w, 200, map[string]any{"storage": s.S.storageStatus(), "status": "ok", "upload_protocols": []int{1, 2}, "spool_used": u, "spool_reserved": v, "spool_limit": s.C.SpoolBytes, "worker_connected": len(s.workerSlot) > 0, "worker_mode": s.C.WorkerMode, "batch_interval_seconds": int64(s.S.Interval / time.Second), "direct_control_active": s.controlActive.Load(), "direct_upload_stage": "cloud_completed", "uploads": s.uploads.snapshot(), "transfers": s.transfers.snapshot()})
+		respond(w, 200, map[string]any{"cloud_limits": s.cloudStatus(), "storage": s.S.storageStatus(), "status": "ok", "upload_protocols": []int{1, 2}, "spool_used": u, "spool_reserved": v, "spool_limit": s.C.SpoolBytes, "worker_connected": len(s.workerSlot) > 0, "worker_mode": s.C.WorkerMode, "batch_interval_seconds": int64(s.S.Interval / time.Second), "direct_control_active": s.controlActive.Load(), "direct_upload_stage": "cloud_completed", "uploads": s.uploads.snapshot(), "transfers": s.transfers.snapshot()})
 	})
 	return accessLog(m)
 }
@@ -465,6 +465,7 @@ func (s *Server) expireStale(ctx context.Context) (int, error) {
 }
 
 func (s *Server) expireGroupFiles(ctx context.Context, id string) (int, error) {
+	s.S.manifestCache.remove(id)
 	rows, e := s.S.DB.QueryContext(ctx, `SELECT id,path,size FROM files WHERE group_id=?`, id)
 	if e != nil {
 		return 0, e

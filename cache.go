@@ -54,6 +54,18 @@ func (c *lruCache[K, V]) put(key K, value V) {
 	}
 }
 
+func (c *lruCache[K, V]) remove(key K) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if item := c.items[key]; item != nil {
+		delete(c.items, key)
+		c.order.Remove(item)
+	}
+}
+
 type groupMetadata struct {
 	raw      string
 	metadata Metadata

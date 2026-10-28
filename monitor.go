@@ -99,7 +99,7 @@ func (s *Server) monitorSnapshot(w http.ResponseWriter, r *http.Request) {
 	uploads := s.uploads.snapshot()
 	w.Header().Set("Cache-Control", "no-store")
 	respond(w, 200, map[string]any{
-		"storage": s.S.storageStatus(), "status": "ok", "spool_used": used, "spool_reserved": reserved, "spool_limit": s.C.SpoolBytes,
+		"cloud_limits": s.cloudStatus(), "storage": s.S.storageStatus(), "status": "ok", "spool_used": used, "spool_reserved": reserved, "spool_limit": s.C.SpoolBytes,
 		"worker_connected": len(s.workerSlot) > 0, "worker_mode": s.C.WorkerMode,
 		"receive_active": len(s.receivers), "receive_limit": s.C.ReceiveConcurrency,
 		"direct_control_active": s.controlActive.Load(), "direct_upload_stage": "cloud_completed",

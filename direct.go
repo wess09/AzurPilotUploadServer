@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -83,6 +84,58 @@ func (s *Server) initializeDirect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer s.releaseGroup(m.UploadID)
+	encoded, _ := json.Marshal(manifest.Files)
+	digest := sha256.Sum256(encoded)
+	if cached, ok := s.S.manifestCache.get(m.UploadID); ok {
+		if cached != digest {
+			reject(w, 409, fmt.Errorf("upload_id file hash conflict"))
+			return
+		}
+		directReply(w, 202, m.UploadID, nil)
+		return
+	}
+	// Repeated initialization is a read, not another transaction containing
+	// several INSERT/SELECT pairs for every file in the same manifest.
+	rows, err := s.S.DB.QueryContext(r.Context(), `SELECT f.idx,f.size,f.md5,f.sha,d.file_id FROM files f LEFT JOIN direct_files d ON d.file_id=f.id WHERE f.group_id=? ORDER BY f.idx`, m.UploadID)
+	if err != nil {
+		reject(w, 503, fmt.Errorf("manifest lookup unavailable; retry"))
+		return
+	}
+	count := 0
+	valid := true
+	conflict := false
+	for rows.Next() {
+		var index int
+		var size int64
+		var md5, sha string
+		var direct sql.NullString
+		if err = rows.Scan(&index, &size, &md5, &sha, &direct); err != nil {
+			break
+		}
+		if index < 0 || index >= len(m.Sizes) || size != m.Sizes[index] || md5 != manifest.Files[index].MD5 || sha != manifest.Files[index].SHA256 {
+			conflict = true
+			break
+		}
+		count++
+		valid = valid && direct.Valid
+	}
+	if err == nil {
+		err = rows.Err()
+	}
+	rows.Close()
+	if conflict {
+		reject(w, 409, fmt.Errorf("upload_id file hash conflict"))
+		return
+	}
+	if err != nil {
+		reject(w, 503, fmt.Errorf("manifest lookup unavailable; retry"))
+		return
+	}
+	if valid && count == len(m.Sizes) {
+		s.S.manifestCache.put(m.UploadID, digest)
+		directReply(w, 202, m.UploadID, nil)
+		return
+	}
 	tx, err := s.S.DB.BeginTx(r.Context(), nil)
 	if err != nil {
 		reject(w, 500, err)
@@ -114,6 +167,7 @@ func (s *Server) initializeDirect(w http.ResponseWriter, r *http.Request) {
 		reject(w, 500, err)
 		return
 	}
+	s.S.manifestCache.put(m.UploadID, digest)
 	slog.Info("direct upload initialized", "upload_id", m.UploadID, "files", len(m.Sizes))
 	directReply(w, 202, m.UploadID, nil)
 }
@@ -285,7 +339,11 @@ func (s *Server) prepareDirect(w http.ResponseWriter, r *http.Request) {
 	parts := []directPart{}
 	for offset, number := int64(0), 1; offset < f.Size; offset, number = offset+slice, number+1 {
 		url, err := s.Direct.DirectURL(ctx, preID, number)
-		if err != nil || !validDirectURL(url) {
+		if err != nil {
+			s.directFailure(w, f, err)
+			return
+		}
+		if !validDirectURL(url) {
 			s.directFailure(w, f, fmt.Errorf("could not obtain a valid cloud upload URL"))
 			return
 		}

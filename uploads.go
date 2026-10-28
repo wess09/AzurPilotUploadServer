@@ -13,10 +13,13 @@ import (
 	"time"
 )
 
-type cloudThrottleError struct{ RetryAfter time.Duration }
+type cloudThrottleError struct {
+	RetryAfter time.Duration
+	Endpoint   string
+}
 
 func (e *cloudThrottleError) Error() string {
-	return fmt.Sprintf("123 rate limited; retry after %ds", int(math.Ceil(e.RetryAfter.Seconds())))
+	return fmt.Sprintf("123 rate limited; retry after %ds; endpoint=%s", int(math.Ceil(e.RetryAfter.Seconds())), e.Endpoint)
 }
 
 func retryAfter(value string, now time.Time) time.Duration {

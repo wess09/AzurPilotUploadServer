@@ -59,6 +59,7 @@ type Store struct {
 	directMu      sync.Mutex
 	directBusy    map[string]bool
 	metadataCache *lruCache[string, groupMetadata]
+	manifestCache *lruCache[string, [32]byte]
 	contentCache  *hotCache
 	cleanup       sync.Mutex
 	DB            *database
@@ -91,6 +92,7 @@ func openStore(c Config) (*Store, error) {
 	}
 	s := &Store{DB: db, Dir: dir, Interval: interval, Now: time.Now, Quota: &Quota{Limit: c.SpoolBytes, MinFree: c.MinFreeBytes, Free: func() (int64, error) { return diskFree(dir) }}}
 	s.metadataCache = newLRU[string, groupMetadata](1024)
+	s.manifestCache = newLRU[string, [32]byte](4096)
 	s.contentCache, err = newHotCache(c.RedisURL)
 	if err != nil {
 		db.Close()

@@ -381,9 +381,11 @@ func (s *Server) completeDirectFile(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	// Persist before the cloud call so a lost HTTP reply can be recovered by
 	// polling, without creating another cloud file or trusting client file IDs.
-	if _, err = s.S.DB.ExecContext(ctx, `UPDATE direct_files SET completing=1 WHERE file_id=?`, f.ID); err != nil {
-		reject(w, 500, err)
-		return
+	if poll == 0 {
+		if _, err = s.S.DB.ExecContext(ctx, `UPDATE direct_files SET completing=1 WHERE file_id=? AND completing=0`, f.ID); err != nil {
+			reject(w, 500, err)
+			return
+		}
 	}
 	result, err := s.Direct.CompleteDirect(ctx, preID, poll != 0)
 	if err != nil {

@@ -131,6 +131,7 @@ func (s *Server) receiveFile(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		slog.Info("file reused", "upload_id", m.UploadID, "file", f.ID, "index", i, "bytes", n)
+		s.transfers.record(false, n)
 	} else if errors.Is(err, sql.ErrNoRows) {
 		err = s.savePart(r.Context(), m.UploadID, i, n, r.Body)
 		if err != nil {

@@ -41,14 +41,32 @@ func (s *Server) logStatus(ctx context.Context) {
 }
 
 func (s *Server) statusLoop(ctx context.Context) {
-	ticker := time.NewTicker(time.Minute)
+	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
+	ticks := 0
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			s.logStatus(ctx)
+			s.logTransfers()
+			ticks++
+			if ticks%6 == 0 {
+				s.logStatus(ctx)
+			}
 		}
 	}
+}
+
+func (s *Server) logTransfers() {
+	r := s.transfers.snapshot()
+	slog.Info("transfer rates", "window_seconds", r.WindowSeconds,
+		"download_images_per_second", r.Download.ImagesPerSecond,
+		"upload_images_per_second", r.Upload.ImagesPerSecond,
+		"download_images_per_second_60s", r.Download.ImagesPerSecond60s,
+		"upload_images_per_second_60s", r.Upload.ImagesPerSecond60s,
+		"download_mib_per_second", rounded(r.Download.BytesPerSecond/(1<<20)),
+		"upload_mib_per_second", rounded(r.Upload.BytesPerSecond/(1<<20)),
+		"download_images_total", r.Download.Total.Images,
+		"upload_images_total", r.Upload.Total.Images)
 }

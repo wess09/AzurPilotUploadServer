@@ -139,6 +139,7 @@ func (s *Server) receiveLegacy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	registered = true
+	s.transfers.record(false, f.Size)
 	slog.Info("file received", "upload_id", m.UploadID, "file", f.ID, "index", f.Index, "bytes", f.Size)
 	hash, duplicate, err := s.S.seal(m.UploadID)
 	if err != nil {

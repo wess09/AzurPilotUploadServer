@@ -37,6 +37,24 @@ Linux 服务器也可在镜像已拉取或导入后执行 `sh deploy/start.sh`�
 
 按 `upload_id`、`file` 或 `batch_id` 关联记录。日志不输出密钥、提交人、原图内容或每个传输缓冲；健康探测不逐次记录。默认镜像的日志时间及 `next_dispatch_at` 使用 UTC，北京时间需加 8 小时。Compose 对日志轮转，最多保留 3 × 10 MiB。
 
+### 图片上传 / 下载速率
+
+`GET /healthz` 的 `transfers` 返回最近 10 秒、60 秒的成功图片吞吐及本次进程启动以来的累计数：
+
+- `download`：客户端 → A，完整接收并登记的单张图片；已存在文件的重传通过哈希核验后也计一次实际接收。
+- `upload`：A → 123 盘，云盘确认完成且状态保存成功的单张图片；失败重试不增加成功数。
+- `images_per_second` / `images_per_second_60s`：10 秒 / 60 秒平均张数每秒。
+- `bytes_per_second` / `bytes_per_second_60s`：对应成功图片大小每秒，不含协议开销或失败传输的带宽。
+- `total.images / total.bytes`：从 `since` 开始累计，重启清零；空闲超过窗口后速率自动回零。
+
+按文件计数，多图上报不合并为一张；重复接收的网络吞吐与组哈希去重后的正式统计数量是不同指标。B 从云盘下载原图不经过 A，不包含在 A 的下载计数中。使用固定 60 个时间桶，图片仍按 64 KiB 流式落盘，不增加原图缓存或数据库写入。
+
+每 10 秒自动输出 `transfer rates` 日志，包含两个方向的张/秒、60 秒均速、MiB/秒和累计图片数。例：
+
+```text
+INFO transfer rates window_seconds=10 download_images_per_second=3.2 upload_images_per_second=1.7 download_images_per_second_60s=2.5 upload_images_per_second_60s=1.6 download_mib_per_second=0.8 upload_mib_per_second=0.4 download_images_total=192 upload_images_total=102
+```
+
 ## 上传协议
 
 ### 按文件上传（Cloudflare Tunnel 推荐）

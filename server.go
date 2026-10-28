@@ -44,10 +44,11 @@ type Server struct {
 	receivers     chan struct{}
 	workerSlot    chan struct{}
 	workerContext context.Context
+	transfers     *transferMetrics
 }
 
 func newServer(c Config, s *Store, pan Uploader) *Server {
-	return &Server{C: c, S: s, Pan: pan, receivers: make(chan struct{}, c.ReceiveConcurrency), workerSlot: make(chan struct{}, 1), workerContext: context.Background()}
+	return &Server{C: c, S: s, Pan: pan, receivers: make(chan struct{}, c.ReceiveConcurrency), workerSlot: make(chan struct{}, 1), workerContext: context.Background(), transfers: newTransferMetrics(time.Now)}
 }
 func respond(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
@@ -74,7 +75,8 @@ func (s *Server) Handler() http.Handler {
 	m.HandleFunc("GET /internal/v1/worker/connect", s.acceptWorker)
 	m.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		u, v := s.S.Quota.snapshot()
-		respond(w, 200, map[string]any{"status": "ok", "spool_used": u, "spool_reserved": v, "spool_limit": s.C.SpoolBytes, "worker_connected": len(s.workerSlot) > 0, "worker_mode": s.C.WorkerMode, "batch_interval_seconds": int64(s.S.Interval / time.Second)})
+		w.Header().Set("Cache-Control", "no-store")
+		respond(w, 200, map[string]any{"status": "ok", "spool_used": u, "spool_reserved": v, "spool_limit": s.C.SpoolBytes, "worker_connected": len(s.workerSlot) > 0, "worker_mode": s.C.WorkerMode, "batch_interval_seconds": int64(s.S.Interval / time.Second), "transfers": s.transfers.snapshot()})
 	})
 	return m
 }
@@ -186,6 +188,7 @@ func (s *Server) receive(w http.ResponseWriter, r *http.Request) {
 				reject(w, 409, fmt.Errorf("file %d differs from previous attempt", i))
 				return
 			}
+			s.transfers.record(false, n)
 			continue
 		}
 		if err = s.savePart(r.Context(), m.UploadID, i, n, p); err != nil {
@@ -282,6 +285,7 @@ func (s *Server) savePart(ctx context.Context, group string, index int, n int64,
 		return err
 	}
 	saved = true
+	s.transfers.record(false, n)
 	slog.Info("file received", "upload_id", group, "file", fileID, "index", index, "bytes", n)
 	return nil
 }
@@ -326,6 +330,7 @@ func (s *Server) uploadLoop(ctx context.Context) {
 		} else {
 			_, err = s.S.DB.Exec(`UPDATE files SET state='uploaded',remote_id=?,error='' WHERE id=?`, id, f.ID)
 			if err == nil {
+				s.transfers.record(true, f.Size)
 				slog.Info("cloud upload completed", "upload_id", f.Group, "file", f.ID, "index", f.Index,
 					"remote_id", id, "bytes", f.Size, "duration_ms", time.Since(started).Milliseconds())
 				err = s.S.removeFile(f)

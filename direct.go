@@ -78,7 +78,7 @@ func (s *Server) initializeDirect(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if err := s.S.claimGroupProtocol(m, 2); err != nil {
+	if err := s.S.claimGroupProtocolContext(r.Context(), m, 2); err != nil {
 		reject(w, 409, err)
 		return
 	}
@@ -130,12 +130,36 @@ func (s *Server) directGroup(w http.ResponseWriter, r *http.Request) (Metadata, 
 	// v2 carries only metadata. It must not compete with v1 image streams for
 	// receive slots; per-group exclusion and cloud request deadlines still apply.
 	s.controlActive.Add(1)
-	m, ok := s.acquireGroupProtocol(w, r.PathValue("id"), 2)
-	if !ok {
+	id := r.PathValue("id")
+	if !uuidRE.MatchString(id) || !s.S.lockDirect(id) {
 		s.controlActive.Add(-1)
-		return m, nil, false
+		reject(w, 409, fmt.Errorf("upload does not exist or is busy; initialize or retry"))
+		return Metadata{}, nil, false
 	}
-	return m, func() { s.releaseGroup(m.UploadID); s.controlActive.Add(-1) }, true
+	release := func() { s.S.unlockDirect(id); s.controlActive.Add(-1) }
+	cached, ok := s.S.metadataCache.get(id)
+	if !ok {
+		var raw string
+		var protocol int
+		err := s.S.DB.QueryRowContext(r.Context(), `SELECT metadata,protocol FROM uploads WHERE id=?`, id).Scan(&raw, &protocol)
+		var m Metadata
+		if err == nil {
+			err = json.Unmarshal([]byte(raw), &m)
+		}
+		if err != nil || protocol != 2 {
+			release()
+			reject(w, 409, fmt.Errorf("initialize a v2 upload first"))
+			return Metadata{}, nil, false
+		}
+		cached = groupMetadata{raw, m, protocol}
+		s.S.metadataCache.put(id, cached)
+	}
+	if cached.protocol != 2 {
+		release()
+		reject(w, 409, fmt.Errorf("upload protocol version conflict"))
+		return Metadata{}, nil, false
+	}
+	return cached.metadata, release, true
 }
 
 func (s *Server) directFile(w http.ResponseWriter, r *http.Request, m Metadata) (File, bool) {
@@ -144,7 +168,8 @@ func (s *Server) directFile(w http.ResponseWriter, r *http.Request, m Metadata) 
 		reject(w, 400, fmt.Errorf("invalid file index"))
 		return File{}, false
 	}
-	f, err := s.S.existing(m.UploadID, i)
+	var f File
+	err = s.S.DB.QueryRowContext(r.Context(), `SELECT id,group_id,idx,path,size,md5,sha,remote_id FROM files WHERE group_id=? AND idx=?`, m.UploadID, i).Scan(&f.ID, &f.Group, &f.Index, &f.Path, &f.Size, &f.MD5, &f.SHA256, &f.RemoteID)
 	if err != nil {
 		reject(w, 409, fmt.Errorf("initialize file manifest first"))
 		return f, false
@@ -164,6 +189,7 @@ func (s *Server) confirmDirect(ctx context.Context, f File, id int64) error {
 		return err
 	}
 	if n, _ := result.RowsAffected(); n == 1 {
+		s.S.contentCache.put(contentKey{f.SHA256, f.MD5, f.Size}, id)
 		s.transfers.recordDirect(f.Size)
 		slog.Info("direct upload cloud completed", "upload_id", f.Group, "file", f.ID, "index", f.Index, "bytes", f.Size)
 	}
@@ -208,7 +234,17 @@ func (s *Server) prepareDirect(w http.ResponseWriter, r *http.Request) {
 	// Reuse only cloud-confirmed IDs for the same expected content. B still
 	// verifies downloaded bytes; no account-level detail call is needed on A.
 	var cached int64
-	err = s.S.DB.QueryRowContext(ctx, `SELECT remote_id FROM files WHERE sha=? AND md5=? AND size=? AND state='uploaded' AND remote_id>0 ORDER BY rowid LIMIT 1`, f.SHA256, f.MD5, f.Size).Scan(&cached)
+	key := contentKey{f.SHA256, f.MD5, f.Size}
+	if id, ok := s.S.contentCache.get(key); ok {
+		cached, err = id, nil
+	} else if !s.S.DB.postgres {
+		err = s.S.DB.QueryRowContext(ctx, `SELECT remote_id FROM files WHERE sha=? AND md5=? AND size=? AND state='uploaded' AND remote_id>0 ORDER BY rowid LIMIT 1`, f.SHA256, f.MD5, f.Size).Scan(&cached)
+		if err == nil {
+			s.S.contentCache.put(key, cached)
+		}
+	} else {
+		err = sql.ErrNoRows
+	}
 	if err == nil {
 		if err = s.confirmDirect(ctx, f, cached); err == nil {
 			directReply(w, 200, m.UploadID, map[string]any{"completed": true})

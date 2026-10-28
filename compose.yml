@@ -4,13 +4,44 @@ services:
     build: .
     restart: unless-stopped
     env_file: .env
+    environment:
+      GOMEMLIMIT: 384MiB
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
     ports: ["127.0.0.1:8090:8090"]
     volumes: ["upload-state:/data"]
     cpus: 2
-    mem_limit: 768m
+    mem_limit: 512m
     stop_grace_period: 40s
     logging:
       driver: json-file
       options: {max-size: "10m", max-file: "3"}
+  postgres:
+    image: postgres:18.4-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: uploader
+      POSTGRES_USER: uploader
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+    command: [postgres, -c, shared_buffers=32MB, -c, work_mem=1MB, -c, maintenance_work_mem=16MB, -c, max_connections=24]
+    mem_limit: 256m
+    volumes: ["pg-state:/var/lib/postgresql"]
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U uploader -d uploader"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+  redis:
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    command: [redis-server, --maxmemory, 24mb, --maxmemory-policy, allkeys-lru, --save, "", --appendonly, "no"]
+    mem_limit: 64m
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 5s
+      timeout: 2s
+      retries: 10
 volumes:
   upload-state:
+  pg-state:

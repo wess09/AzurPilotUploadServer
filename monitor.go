@@ -46,11 +46,19 @@ func (s *Server) queueSummary(ctx context.Context) monitorQueue {
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 	var q monitorQueue
-	db, err := sql.Open("sqlite", filepath.Join(s.C.DataDir, "state.sqlite"))
-	if err == nil {
-		defer db.Close()
-		db.SetMaxOpenConns(1)
-		_, err = db.ExecContext(ctx, `PRAGMA query_only=ON; PRAGMA busy_timeout=1000`)
+	db := s.S.DB
+	var err error
+	if !db.postgres {
+		raw, e := sql.Open("sqlite", filepath.Join(s.C.DataDir, "state.sqlite"))
+		err = e
+		if e == nil {
+			db = &database{raw, false}
+		}
+		if err == nil {
+			defer db.Close()
+			db.SetMaxOpenConns(1)
+			_, err = db.ExecContext(ctx, `PRAGMA query_only=ON; PRAGMA busy_timeout=1000`)
+		}
 	}
 	if err == nil {
 		err = db.QueryRowContext(ctx, `SELECT
@@ -91,7 +99,7 @@ func (s *Server) monitorSnapshot(w http.ResponseWriter, r *http.Request) {
 	uploads := s.uploads.snapshot()
 	w.Header().Set("Cache-Control", "no-store")
 	respond(w, 200, map[string]any{
-		"status": "ok", "spool_used": used, "spool_reserved": reserved, "spool_limit": s.C.SpoolBytes,
+		"storage": s.S.storageStatus(), "status": "ok", "spool_used": used, "spool_reserved": reserved, "spool_limit": s.C.SpoolBytes,
 		"worker_connected": len(s.workerSlot) > 0, "worker_mode": s.C.WorkerMode,
 		"receive_active": len(s.receivers), "receive_limit": s.C.ReceiveConcurrency,
 		"direct_control_active": s.controlActive.Load(), "direct_upload_stage": "cloud_completed",

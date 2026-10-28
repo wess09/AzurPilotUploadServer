@@ -2,7 +2,7 @@
 
 ## Project Structure & Module Organization
 
-This repository implements node A of the AzurPilot screenshot pipeline in Go 1.26. Root files deliberately form one small executable: `server.go` handles streaming reception and upload workers, `store.go` owns SQLite state, `quota.go` tracks disk reservations, `pan.go` implements 123Pan, and `main.go` manages shutdown and WebSocket delivery. Platform disk checks live in `disk_windows.go` and `disk_unix.go`. Runtime data belongs in the ignored `data/` directory.
+This repository implements node A of the AzurPilot screenshot pipeline in Go 1.26. Root files deliberately form one small executable: `server.go` handles streaming reception and upload workers, `store.go` owns durable state, `database.go` supports PostgreSQL and offline SQLite migration, `hot.go` implements the five-minute Redis hash cache, `access.go` logs request sources, `quota.go` tracks disk reservations, `pan.go` implements 123Pan, and `main.go` manages shutdown and WebSocket delivery. Platform disk checks live in `disk_windows.go` and `disk_unix.go`. Runtime data belongs in the ignored `data/` directory.
 
 ## Build, Test, and Development Commands
 
@@ -28,3 +28,5 @@ Use focused `feat:`, `fix:`, or `docs:` commits with concise descriptions. Inclu
 ## Security & Configuration
 
 Keep `.env`, credentials, images, and SQLite files out of Git. Never release spool space before successful unlink. Retain durable cloud IDs and batch IDs until acknowledgement; never delete cloud originals automatically.
+
+Production uses PostgreSQL with an eight-connection pool and volatile Redis hashes (300-second TTL). SQLite remains for offline migration and isolated unit tests. Preserve the original SQLite snapshot and spool during migration; never clear live queues. Redis misses use cloud MD5 reuse without scanning cold history. Keep caches bounded and use TCP peer IPs unless a trusted proxy is explicitly configured.

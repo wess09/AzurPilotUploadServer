@@ -84,17 +84,17 @@ func (s *Server) Handler() http.Handler {
 	m.HandleFunc("POST /api/v1/uploads/init", s.initialize)
 	m.HandleFunc("PUT /api/v1/uploads/{id}/files/{index}", s.receiveFile)
 	m.HandleFunc("POST /api/v1/uploads/{id}/complete", s.complete)
-	m.HandleFunc("POST /api/v2/uploads/init", s.initializeDirect)
-	m.HandleFunc("POST /api/v2/uploads/{id}/files/{index}/prepare", s.prepareDirect)
-	m.HandleFunc("POST /api/v2/uploads/{id}/files/{index}/complete", s.completeDirectFile)
-	m.HandleFunc("POST /api/v2/uploads/{id}/complete", s.completeDirect)
+	m.HandleFunc("POST /api/v2/uploads/init", directDeadline(s.initializeDirect))
+	m.HandleFunc("POST /api/v2/uploads/{id}/files/{index}/prepare", directDeadline(s.prepareDirect))
+	m.HandleFunc("POST /api/v2/uploads/{id}/files/{index}/complete", directDeadline(s.completeDirectFile))
+	m.HandleFunc("POST /api/v2/uploads/{id}/complete", directDeadline(s.completeDirect))
 	m.HandleFunc("GET /internal/v1/worker/connect", s.acceptWorker)
 	m.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		u, v := s.S.Quota.snapshot()
 		w.Header().Set("Cache-Control", "no-store")
-		respond(w, 200, map[string]any{"status": "ok", "upload_protocols": []int{1, 2}, "spool_used": u, "spool_reserved": v, "spool_limit": s.C.SpoolBytes, "worker_connected": len(s.workerSlot) > 0, "worker_mode": s.C.WorkerMode, "batch_interval_seconds": int64(s.S.Interval / time.Second), "direct_control_active": s.controlActive.Load(), "direct_upload_stage": "cloud_completed", "uploads": s.uploads.snapshot(), "transfers": s.transfers.snapshot()})
+		respond(w, 200, map[string]any{"storage": s.S.storageStatus(), "status": "ok", "upload_protocols": []int{1, 2}, "spool_used": u, "spool_reserved": v, "spool_limit": s.C.SpoolBytes, "worker_connected": len(s.workerSlot) > 0, "worker_mode": s.C.WorkerMode, "batch_interval_seconds": int64(s.S.Interval / time.Second), "direct_control_active": s.controlActive.Load(), "direct_upload_stage": "cloud_completed", "uploads": s.uploads.snapshot(), "transfers": s.transfers.snapshot()})
 	})
-	return m
+	return accessLog(m)
 }
 func (s *Server) validate(m Metadata) error {
 	if m.CombatCount < 0 || m.CombatCount > 1e9 || len(m.LegacyFilename) > 256 || len(m.Submitter) > 128 || len(m.LegacyDeviceID) > 64 {
@@ -435,16 +435,22 @@ func (s *Server) expireStale(ctx context.Context) (int, error) {
 	}
 	expired := 0
 	for _, id := range ids {
+		if !s.S.lockDirect(id) {
+			continue
+		}
 		// The client keeps its own copy and re-initializes the same upload ID,
 		// so marking the group abandoned only drops this partial attempt.
 		res, x := s.S.DB.ExecContext(ctx, `UPDATE uploads SET state='abandoned' WHERE id=? AND state='receiving' AND busy=0`, id)
 		if x != nil {
+			s.S.unlockDirect(id)
 			return expired, x
 		}
 		if n, _ := res.RowsAffected(); n != 1 {
+			s.S.unlockDirect(id)
 			continue
 		}
 		files, x := s.expireGroupFiles(ctx, id)
+		s.S.unlockDirect(id)
 		if x != nil {
 			return expired, x
 		}

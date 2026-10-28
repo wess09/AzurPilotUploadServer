@@ -165,11 +165,17 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	if len(os.Args) == 3 && os.Args[1] == "--migrate-sqlite" {
+		return migrateSQLite(c, os.Args[2])
+	}
 	st, err := openStore(c)
 	if err != nil {
 		return err
 	}
 	defer st.DB.Close()
+	if st.contentCache.client != nil {
+		defer st.contentCache.client.Close()
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	cloudTransport := http.DefaultTransport.(*http.Transport).Clone()

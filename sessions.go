@@ -66,6 +66,9 @@ func (s *Server) acquireReceiver(w http.ResponseWriter) bool {
 }
 
 func (s *Server) releaseGroup(id string) {
+	if s.S.unlockDirect(id) {
+		return
+	}
 	if _, err := s.S.DB.Exec(`UPDATE uploads SET busy=0 WHERE id=?`, id); err != nil {
 		slog.Error("release upload", "error", err)
 	}

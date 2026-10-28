@@ -140,3 +140,15 @@ go vet ./...
 `POST /api/upload` 和 `/api/upload/` 接收单个 multipart `file`，支持旧 AP 的 `device_id/genre/combat_count`，以及 `User-Agent: Alas (<id>)` 的单文件上传。成功 HTTP 200，兼容 Lsky/Imgurl 回执。原 PNG 文件名中的 13 位毫秒时间戳作为采集时间；显式 `collected_at` 优先。无场景信息的截图由 B 分类，不确定时进入复核。
 
 `STATISTICS_PUBLIC_URL` 设置 C 公网地址（例如 `https://stats.azurpilot.com`），历史 JSON 和查询接口以 307 转交 C。图片仍在 A 流式落盘，每请求只预留单文件上限，上传 123 盘完成后删除本地副本。调度仍按 :00/:30，`BATCH_SIZE` 不是触发份数。
+
+## PostgreSQL、Redis 与来源日志
+
+生产配置 `DATABASE_URL`、`REDIS_URL`。PostgreSQL 持久化图片组、文件位置、123 文件 ID、批次及回执；应用最多 8 个数据库连接。Redis 仅缓存已完成上传的内容哈希到文件 ID，固定 TTL 300 秒，读取不续期；过期后创建直传任务由 123Pan 判断 MD5 秒传复用，不扫描 PG 历史文件。PG 的组哈希唯一约束继续保证重启、断线和跨时段重传不重复统计。
+
+组元数据使用有界内存缓存，同一组的 HTTP 请求使用进程内占用锁，不把每次请求加锁/解锁写入数据库。每个 DATA_DIR 仅运行一个 uploader。直传控制链路整体限时 12 秒；图片不进入这些缓存。
+
+标准 Compose 提供小规格 PG 与 Redis；已有 PostgreSQL 的主机应新建独立数据库和角色、复用现有实例，避免重复占用 2c2g 的内存。Redis 不公开端口，最大缓存 24 MiB，无磁盘持久化；重启只使热缓存失效。
+
+迁移时先停止旧 uploader，再使用新镜像及 PG 配置运行 `upload-server --migrate-sqlite /data/state.sqlite`。迁移通过一个 PG 事务 COPY 全部有效记录，并逐表核对行数；目标库必须为空。保留原 SQLite 与 spool 卷，确认迁移提交后才启动新服务。迁移失败可恢复原镜像和配置；切换后产生新记录时不要直接回退旧 SQLite，以免遗漏新任务。
+
+`/healthz` 和监控响应包含 `storage`，显示实际数据库、Redis、300 秒 TTL 和数据库连接池状态。访问日志 `http request` 包含 `request_ip / method / path / status / duration_ms / user_agent`；来源使用 TCP RemoteAddr，忽略未经认证的转发头。不会记录鉴权头、请求体或云盘签名 URL。

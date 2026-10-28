@@ -64,6 +64,11 @@ func (l *cloudLane) wait(ctx context.Context, path string) error {
 		}
 		l.mu.Lock()
 		now := time.Now()
+		if now.Before(l.until) {
+			delay := l.until.Sub(now)
+			l.mu.Unlock()
+			return &cloudThrottleError{RetryAfter: delay, Endpoint: path}
+		}
 		slot := maxTime(now, maxTime(l.next, l.until))
 		generation := l.generation
 		if deadline, ok := ctx.Deadline(); ok && slot.Add(50*time.Millisecond).After(deadline) {
